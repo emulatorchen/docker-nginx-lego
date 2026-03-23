@@ -2,12 +2,12 @@ version: '3'
 
 services:
   nginx:
-    image: jonasal/nginx-certbot:latest
+    image: emulator/docker-nginx-lego:latest
     restart: unless-stopped
     environment:
       - CERTBOT_EMAIL
     env_file:
-      - ./nginx-certbot.env
+      - ./nginx-lego.env
     ports:
       - 80:80
       - 443:443

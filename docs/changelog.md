@@ -1,5 +1,22 @@
 # Changelog
 
+### fork: lego-only migration (emulatorchen/docker-nginx-lego)
+- Replaced certbot entirely with [lego](https://github.com/go-acme/lego) — a
+  static Go binary supporting 150+ DNS providers via HTTP-01 (webroot) and DNS-01.
+- Removed all Python/pip/certbot dependencies and the Rust toolchain (was needed
+  only to build `cryptography` on ARM). ARM build times drop from ~30min to ~2min.
+- `run_lego.sh` now handles all certificate types (webroot + any DNS provider);
+  `run_certbot.sh` deleted.
+- New `determine_authenticator()` function reads provider from cert name suffix
+  (`.dns-cloudflare`, `.dns-route53`, etc.).
+- Credential file format updated to lego-native `KEY=VALUE` env var style.
+  Legacy `dns-multi` `multi.ini` format is fully backward compatible.
+- `LEGO_DEFAULT_PROVIDER` env var introduced; `CERTBOT_AUTHENTICATOR` still
+  accepted as a backward-compatible alias.
+- `RSA_KEY_SIZE` and `ELLIPTIC_CURVE` env vars are now honored by lego.
+- `docs/certbot_authenticators.md` rewritten as `docs/lego_providers.md`.
+- `UPSTREAM_SYNC.md` added documenting the nginx-layer merge strategy.
+
 ### 6.1.0
 - Added porkbun DNS authenticator.
   - PR by [@Oni][61]

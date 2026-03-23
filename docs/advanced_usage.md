@@ -11,7 +11,7 @@ The container configures handlers for the following signals:
  - `SIGINT`, `SIGQUIT`, `SIGTERM` - Shutdown the child processes (nginx and the
    [sleep timer](./good_to_know.md#renewal-check-interval)) and exit the
    container.
- - `SIGHUP` - Rerun [`run_certbot.sh`](../src/scripts/run_certbot.sh) and tell
+ - `SIGHUP` - Rerun [`run_lego.sh`](../src/scripts/run_lego.sh) and tell
    nginx to test and reload the configuration files (i.e. `nginx -t` followed
    by `nginx -s reload`). See [Manual/Force Renewal](#manualforce-renewal),
    [Controlling NGINX][20], and [Changing configuration][21] for more details.
@@ -28,7 +28,7 @@ docker kill --signal=HUP <container_name>
 
 ## Manual/Force Renewal
 It might be of interest to manually trigger a renewal of the certificates, and
-that is why the [`run_certbot.sh`](../src/scripts/run_certbot.sh) script is
+that is why the [`run_lego.sh`](../src/scripts/run_lego.sh) script is
 possible to run standalone at any time from within the container.
 
 However, the preferred way of requesting a reload of all the configuration files
@@ -43,14 +43,14 @@ and make the renewal loop start again from the beginning, which includes a lot
 of other checks than just the certificates.
 
 While this will be enough in the majority of the cases, it might sometimes be
-necessary to **force** a renewal of the certificates even though certbot thinks
+necessary to **force** a renewal of the certificates even though lego thinks
 it could keep them for a while longer (like when [this][2] happened). It is
 therefore possible to add "force" as an argument, when calling the
-[`run_certbot.sh`](../src/scripts/run_certbot.sh) script, to have it append
-the `--force-renewal` flag to the requests made.
+[`run_lego.sh`](../src/scripts/run_lego.sh) script, to have it append
+the `--force` flag to the requests made.
 
 ```bash
-docker exec -it <container_name> /scripts/run_certbot.sh force
+docker exec -it <container_name> /scripts/run_lego.sh force
 ```
 
 This will request new certificates regardless of when they are set to expire.
@@ -105,7 +105,7 @@ A more detailed example of this can be viewed in
 Important to remember is that here we define a wildcard domain name (the `*`
 in the the `*.yourdomain.org`), and that requires you to use an authenticator
 capable of DNS-01 challenges, and more info about that may be found in the
-[certbot_authenticators.md](./certbot_authenticators.md) document.
+[lego_providers.md](./lego_providers.md) document.
 
 
 ## Multi-Certificate Setup
@@ -122,11 +122,10 @@ statements at the top.
 
 How this works is that Nginx is able to [load multiple certificate files][5]
 for each server block, and you then configure the cipher suites in an order
-that prefers ECDSA certificates. The [scripts](../src/scripts/run_certbot.sh)
-running inside the container then looks for some (case insensitive) variant of
-these strings in the
-[`--cert-name`](./good_to_know.md#how-the-script-add-domain-names-to-certificate-requests)
-argument:
+that prefers ECDSA certificates. The scripts running inside the container look for some (case insensitive)
+variant of these strings in the cert name from the
+[`ssl_certificate_key`](./good_to_know.md#how-the-script-add-domain-names-to-certificate-requests)
+path:
 
 - `-rsa`
 - `.rsa`
@@ -143,15 +142,15 @@ environment variable.
 
 ## Use Custom ACME URL
 There are two variables available at the top of the
-[`run_certbot.sh`](../src/scripts/run_certbot.sh) script:
+[`run_lego.sh`](../src/scripts/run_lego.sh) script:
 
 - `CERTBOT_PRODUCTION_URL`
 - `CERTBOT_STAGING_URL`
 
-which are used to define which server certbot will try to contact when
+which are used to define which server lego will try to contact when
 requesting new certificates. These variables have default values, but it is
-possible to override them by defining environment vairables with the same name.
-This then enables you to redirect certbot to another custom URL if you, for
+possible to override them by defining environment variables with the same name.
+This then enables you to redirect lego to another custom URL if you, for
 example, are running your own custom ACME server.
 
 
@@ -178,7 +177,7 @@ create.
 To enable the usage of this local CA you just set
 [`USE_LOCAL_CA=1`](../README.md#advanced), and this will then trigger the
 execution of the [`run_local_ca.sh`](../src/scripts/run_local_ca.sh) script
-instead of the [`run_certbot.sh`](../src/scripts/run_certbot.sh) one when it is
+instead of the [`run_lego.sh`](../src/scripts/run_lego.sh) one when it is
 time to renew the certificates. This script, when run, will always overwrite
 any previous keys and certificates, so alternating between the use of a local
 CA and certbot without first emptying the `/etc/letsencrypt` folder is **not**
