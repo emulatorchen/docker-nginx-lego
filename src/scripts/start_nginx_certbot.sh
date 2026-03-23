@@ -65,13 +65,8 @@ while true; do
         # Renew all certificates with the help of the local CA.
         "$(cd "$(dirname "$0")"; pwd)/run_local_ca.sh"
     else
-        # Run certbot to check if any certificates needs renewal.
-        "$(cd "$(dirname "$0")"; pwd)/run_certbot.sh"
-        # On images that ship the static lego binary (e.g. Alpine), also run
-        # lego to handle dns-multi certificates that certbot cannot process there.
-        if command -v lego >/dev/null 2>&1; then
-            "$(cd "$(dirname "$0")"; pwd)/run_lego.sh"
-        fi
+        # FORK: certbot removed; lego handles all certificate types.
+        "$(cd "$(dirname "$0")"; pwd)/run_lego.sh"
     fi
 
     # Finally we sleep for the defined time interval before checking the

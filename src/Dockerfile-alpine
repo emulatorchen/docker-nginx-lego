@@ -1,100 +1,52 @@
 FROM nginx:1.29.5-alpine
-LABEL maintainer="Jonas Alfredsson <jonas.alfredsson@protonmail.com>"
+LABEL maintainer="emulatorchen"
 
-ENV CERTBOT_DNS_AUTHENTICATORS="\
-    cloudflare \
-    digitalocean \
-    dnsimple \
-    dnsmadeeasy \
-    gehirn \
-    google \
-    linode \
-    luadns \
-    nsone \
-    ovh \
-    rfc2136 \
-    route53 \
-    sakuracloud \
-    ionos \
-    bunny \
-    duckdns \
-    hetzner \
-    infomaniak \
-    namecheap \
-    godaddy \
-    gandi \
-    powerdns \
-    porkbun \
-    "
+# FORK: Python/certbot removed. Only the static lego binary is installed.
+# Certbot is replaced by lego — a self-contained Go binary that covers all
+# HTTP-01 (webroot) and DNS-01 challenges across 150+ providers.
+#
+# When merging from upstream (JonasAlfredsson/docker-nginx-certbot):
+#   - Apply FROM version bump (this line) directly.
+#   - Review COPY scripts/ and lines after it for nginx-layer changes.
+#   - Skip all certbot/Python changes — they are intentionally removed.
 
-# Needed in order to install Python packages via PIP after PEP 668 was
-# introduced, but I believe this is safe since we are in a container without
-# any real need to cater to other programs/environments.
-ARG PIP_BREAK_SYSTEM_PACKAGES=1
-
-# Through this we gain the ability to handle certbot upgrades through
-# dependabot pull requests.
-COPY requirements.txt /requirements.txt
-
-# Do a single run command to make the intermediary containers smaller.
-RUN set -ex && \
-# Install packages necessary during the build phase (for all architectures).
-    apk add --no-cache \
-        bash \
-        curl \
-        findutils \
-        libffi \
-        libffi-dev \
-        libressl \
-        libressl-dev \
-        ncurses \
-        procps \
-        python3 \
-        python3-dev \
-        sed \
-    && \
-# Install the latest version of PIP, Setuptools and Wheel.
-    curl -L 'https://bootstrap.pypa.io/get-pip.py' | python3 && \
-# Install certbot.
-    pip3 install -r /requirements.txt && \
-# Install all supported extra authenticators.
-    pip3 install $(echo $CERTBOT_DNS_AUTHENTICATORS | xargs | sed 's/\(^\| \)/\1certbot-dns-/g') && \
-# Remove everything that is no longer necessary.
-    apk del \
-        curl \
-        libffi-dev \
-        libressl-dev \
-        python3-dev \
-    && \
-    rm -rf /root/.cache && \
-# Create new directories and set correct permissions.
-    mkdir -p /var/www/letsencrypt && \
-    mkdir -p /etc/nginx/user_conf.d && \
-    chown 82:82 -R /var/www \
-    && \
-# Symlink libressl so it is invoked when "openssl" is called by the scripts.
-    ln -s /usr/bin/libressl /usr/bin/openssl \
-    && \
-# Make sure there are no surprise config files inside the config folder.
-    rm -f /etc/nginx/conf.d/*
-
-# Install the static lego binary to handle dns-multi certificates on Alpine.
-# lego reads the same multi.ini credentials file and covers all 150+ DNS providers.
 ARG LEGO_VERSION=4.33.0
 ARG TARGETARCH
 ARG TARGETVARIANT
+
+# Do a single run command to make the intermediary containers smaller.
 RUN set -ex && \
+# Install packages needed at runtime.
+    apk add --no-cache \
+        bash \
+        findutils \
+        libressl \
+        ncurses \
+        openssl \
+        procps \
+        sed \
+        wget \
+    && \
+# Symlink libressl so it is invoked when "openssl" is called by the scripts.
+    ln -sf /usr/bin/libressl /usr/bin/openssl && \
+# Install the static lego binary for certificate management.
     if [ "${TARGETARCH}" = "arm" ] && [ -n "${TARGETVARIANT}" ]; then \
         ARCH="arm${TARGETVARIANT}"; \
     else \
         ARCH=$(echo "${TARGETARCH:-$(uname -m)}" | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/armv7l/armv7/;s/armv6l/armv6/'); \
     fi && \
     wget -qO- "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/lego_v${LEGO_VERSION}_linux_${ARCH}.tar.gz" \
-    | tar -xz -C /usr/local/bin lego && \
-    chmod +x /usr/local/bin/lego
+        | tar -xz -C /usr/local/bin lego && \
+    chmod +x /usr/local/bin/lego && \
+# Create new directories and set correct permissions.
+    mkdir -p /var/www/letsencrypt && \
+    mkdir -p /etc/nginx/user_conf.d && \
+    chown 82:82 -R /var/www && \
+# Make sure there are no surprise config files inside the config folder.
+    rm -f /etc/nginx/conf.d/*
 
 # Copy in our "default" Nginx server configurations, which make sure that the
-# ACME challenge requests are correctly forwarded to certbot and then redirects
+# ACME challenge requests are correctly forwarded to lego and then redirects
 # everything else to HTTPS.
 COPY nginx_conf.d/ /etc/nginx/conf.d/
 
@@ -111,6 +63,6 @@ VOLUME /etc/letsencrypt
 # port 443 here.
 EXPOSE 443
 
-# Change the container's start command to launch our Nginx and certbot
+# Change the container's start command to launch our Nginx and lego
 # management script.
 CMD [ "/scripts/start_nginx_certbot.sh" ]
