@@ -2,7 +2,7 @@
 
 # Helper function to gracefully shut down our child processes when we exit.
 clean_exit() {
-    for PID in "${NGINX_PID}" "${CERTBOT_LOOP_PID}"; do
+    for PID in "${NGINX_PID}" "${LEGO_LOOP_PID}"; do
         if kill -0 "${PID}" 2>/dev/null; then
             kill -SIGTERM "${PID}"
             wait "${PID}"
@@ -49,7 +49,7 @@ if [ -z "${RENEWAL_INTERVAL}" ]; then
 fi
 
 # Instead of trying to run 'cron' or something like that, just sleep and
-# call on certbot after the defined interval.
+# call on lego after the defined interval.
 (
 set -e
 while true; do
@@ -77,15 +77,15 @@ while true; do
     sleep "${RENEWAL_INTERVAL}" || x=$?; if [ -n "${x}" ] && [ "${x}" -ne "143" ]; then exit "${x}"; fi
 done
 ) &
-CERTBOT_LOOP_PID=$!
-debug "PID of the autorenewal loop: ${CERTBOT_LOOP_PID}"
+LEGO_LOOP_PID=$!
+debug "PID of the autorenewal loop: ${LEGO_LOOP_PID}"
 
 # A helper function to prematurely terminate the sleep process, inside the
 # autorenewal loop process, in order to immediately restart the loop again
 # and thus reload any configuration files.
 reload_configs() {
     info "Received SIGHUP signal; terminating the autorenewal sleep process"
-    if ! pkill -15 -P "${CERTBOT_LOOP_PID}" -fx "sleep ${RENEWAL_INTERVAL}"; then
+    if ! pkill -15 -P "${LEGO_LOOP_PID}" -fx "sleep ${RENEWAL_INTERVAL}"; then
         warning "No sleep process found, this most likely means that a renewal process is currently running"
     fi
     # On success we return 128 + SIGHUP in order to reduce the complexity of
@@ -105,14 +105,14 @@ reopen_logs() {
 }
 trap "reopen_logs" USR1
 
-# Nginx and the certbot update-loop process are now our children. As a parent
+# Nginx and the lego renewal loop process are now our children. As a parent
 # we will wait for both of their PIDs, and if one of them exits we will follow
 # suit and use the same status code as the program which exited first.
 # The loop is necessary since the signal traps will make any "wait" return
 # immediately when triggered, and to not exit the entire program we will have
 # to wait on the original PIDs again.
 while [ -z "${exit_code}" ] || [ "${exit_code}" = "129" ] || [ "${exit_code}" = "138" ]; do
-    wait -n ${NGINX_PID} ${CERTBOT_LOOP_PID}
+    wait -n ${NGINX_PID} ${LEGO_LOOP_PID}
     exit_code=$?
 done
 

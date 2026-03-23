@@ -306,7 +306,7 @@ done < <(find -L /etc/nginx/conf.d/ -name "*.conf*" -type f -print0)
 for cert_name in "${!certificates[@]}"; do
     server_names=(${certificates["${cert_name}"]})
 
-    # Determine key type from cert name (same logic as run_certbot.sh).
+    # Determine key type from cert name.
     if [[ "${cert_name,,}" =~ (^|[-.])ecdsa([-.]|$) ]] || \
        [[ "${cert_name,,}" =~ (^|[-.])ecc([-.]|$) ]]; then
         key_type="ecdsa"

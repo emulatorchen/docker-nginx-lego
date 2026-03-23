@@ -68,8 +68,8 @@ For example the line `server_name mail.*` would produce a certificate request
 for the domain name `mail.*`, which is not valid.
 
 However, to combat this limitation it is possible to define a special comment
-on the same line in order to override what the scripts will pick up. So in this
-contrived example
+(`lego_domain:`) on the same line in order to override what the scripts will
+pick up. So in this contrived example
 
 ```bash
 server {
@@ -77,9 +77,9 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/test-name/privkey.pem;
 
     server_name         yourdomain.org;
-    server_name         www.yourdomain.org; # certbot_domain:*.yourdomain.org
-    server_name         sub.yourdomain.org; # certbot_domain:*.yourdomain.org
-    server_name         mail.*;             # certbot_domain:*.yourdomain.org
+    server_name         www.yourdomain.org; # lego_domain:*.yourdomain.org
+    server_name         sub.yourdomain.org; # lego_domain:*.yourdomain.org
+    server_name         mail.*;             # lego_domain:*.yourdomain.org
     server_name         ~^(?<user>.+)\.yourdomain\.org$;
     ...
 }
@@ -88,7 +88,7 @@ server {
 we will end up with a certificate request which looks like this:
 
 ```
-certbot --cert-name "test-name" ... -d yourdomain.org -d *.yourdomain.org
+lego --cert-name "test-name" ... --domains yourdomain.org --domains *.yourdomain.org
 ```
 
 The fist server name will be picked up as usual, while the following three will
@@ -157,7 +157,7 @@ example, are running your own custom ACME server.
 ## Local CA
 During the development phase of a website you might be testing stuff on a
 computer that either does not have a DNS record pointing to itself or perhaps
-it does not have internet access at all. Since certbot has both of these as
+it does not have internet access at all. Since lego has both of these as
 requirements to function properly it was previously impossible to use this
 image during those particular situations.
 
@@ -166,7 +166,7 @@ created, since this makes it possible to use a
 [local (self-signed) certificate authority][10] that can issue website
 certificates without relying on any external service or internet connection.
 It also enables us to issue certificates that are valid for `localhost` and/or
-IP addresses like `::1`, which are otherwise [impossible][7] for certbot to
+IP addresses like `::1`, which are otherwise [impossible][7] for lego to
 create.
 
 > You can also use this solution if your intend to deploy behind a CDN and you
@@ -180,11 +180,11 @@ execution of the [`run_local_ca.sh`](../src/scripts/run_local_ca.sh) script
 instead of the [`run_lego.sh`](../src/scripts/run_lego.sh) one when it is
 time to renew the certificates. This script, when run, will always overwrite
 any previous keys and certificates, so alternating between the use of a local
-CA and certbot without first emptying the `/etc/letsencrypt` folder is **not**
+CA and lego without first emptying the `/etc/letsencrypt` folder is **not**
 supported.
 
-The script is designed to mimic certbot as closely as reasonable, so the
-keys/certs created are placed in the same locations as certbot would have. This
+The script is designed to mimic lego's certificate layout as closely as reasonable, so the
+keys/certs created are placed in the same locations as lego would have. This
 means that you only have to edit the `server_name` in your server configuration
 files to include the variant that you want for your local instance (e.g.
 `localhost`) and you should be all set.

@@ -64,4 +64,4 @@ EXPOSE 443
 
 # Change the container's start command to launch our Nginx and lego
 # management script.
-CMD [ "/scripts/start_nginx_certbot.sh" ]
+CMD [ "/scripts/start_nginx_lego.sh" ]
