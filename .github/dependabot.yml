@@ -1,17 +1,11 @@
 version: 2
 updates:
-# Maintain dependencies for Dockerfiles.
+# Maintain dependencies for Dockerfiles (FROM nginx:X.Y.Z version bumps).
   - package-ecosystem: "docker"
     directory: "/src"
     schedule:
       interval: "daily"
       time: "04:00"
-    open-pull-requests-limit: 10
-# Maintain dependencies for pip packages.
-  - package-ecosystem: "pip"
-    directory: "/src"
-    schedule:
-      interval: "daily"
     open-pull-requests-limit: 10
 # Maintain dependencies for GitHub Actions.
   - package-ecosystem: "github-actions"
@@ -19,3 +13,4 @@ updates:
     schedule:
       interval: "daily"
     open-pull-requests-limit: 10
+# Note: pip ecosystem removed — no Python/certbot dependencies in this fork.

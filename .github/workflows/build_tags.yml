@@ -10,7 +10,7 @@ on:
 jobs:
   docker_buildx_debian:
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 30
     steps:
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
@@ -43,14 +43,14 @@ jobs:
           no-cache: true
           push: true
           tags: |
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}-nginx${{ env.NGINX_VERSION }}
+            emulator/docker-nginx-lego:${{ env.APP_MAJOR }}
+            emulator/docker-nginx-lego:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}
+            emulator/docker-nginx-lego:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}
+            emulator/docker-nginx-lego:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}-nginx${{ env.NGINX_VERSION }}
 
   docker_buildx_alpine:
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 20
     steps:
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
@@ -81,7 +81,7 @@ jobs:
           no-cache: true
           push: true
           tags: |
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}-alpine
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}-alpine
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}-alpine
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}-nginx${{ env.NGINX_VERSION }}-alpine
+            emulator/docker-nginx-lego:${{ env.APP_MAJOR }}-alpine
+            emulator/docker-nginx-lego:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}-alpine
+            emulator/docker-nginx-lego:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}-alpine
+            emulator/docker-nginx-lego:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}-nginx${{ env.NGINX_VERSION }}-alpine

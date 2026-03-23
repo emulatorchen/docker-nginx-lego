@@ -1,0 +1,143 @@
+name: "integration-tests"
+
+# Uses pull_request_target so that PRs from forks run in the base repo context
+# and have access to the owner's secrets and domain variables. This means the
+# owner's staging cert is always tested against the actual PR code.
+#
+# Security note: enable "Require approval for all outside collaborators" in
+# Settings → Actions → General to hold fork PRs until manually reviewed.
+#
+# Domain and cert-name variables are read from repository variables (Settings →
+# Secrets and variables → Variables). They are NOT inherited by forks, so a fork
+# that sets its own token but forgets to set domain variables will fail fast.
+#
+# Required repository variables:
+#   FREEMYIP_DOMAIN    e.g. this.freemyip.com
+#   FREEMYIP_CERT_NAME e.g. this-freemyip.dns-freemyip
+#
+# Required repository secrets:
+#   FREEMYIP_TOKEN
+
+on:
+  workflow_dispatch:
+  pull_request_target:
+    branches:
+      - "main"
+      - "master"
+    paths:
+      - "src/**"
+
+permissions:
+  contents: read
+
+jobs:
+  integration_freemyip:
+    name: "DNS-01 via FreeMyIP (staging)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check secrets and variables
+        id: check
+        run: |
+          if [ -z "${{ secrets.FREEMYIP_TOKEN }}" ]; then
+            echo "Skipping: FREEMYIP_TOKEN secret is not configured (fork or external PR)"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          elif [ -z "${{ vars.FREEMYIP_DOMAIN }}" ] || [ -z "${{ vars.FREEMYIP_CERT_NAME }}" ]; then
+            echo "ERROR: FREEMYIP_TOKEN is set but domain variables are missing."
+            echo "Set these in: Settings → Secrets and variables → Variables"
+            echo "  FREEMYIP_DOMAIN     your freemyip subdomain, e.g. mysite.freemyip.com"
+            echo "  FREEMYIP_CERT_NAME  lego cert name, e.g. mysite-freemyip.dns-freemyip"
+            exit 1
+          fi
+
+      - name: Checkout
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Debian image (amd64)
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/build-push-action@v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: docker-nginx-lego:integration-test
+
+      - name: Create credentials directory
+        if: steps.check.outputs.skip != 'true'
+        run: mkdir -p /tmp/lego-test-creds
+
+      - name: Write FreeMyIP credentials
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          cat > /tmp/lego-test-creds/freemyip.ini << 'EOF'
+          FREEMYIP_TOKEN=${{ secrets.FREEMYIP_TOKEN }}
+          EOF
+
+      - name: Write FreeMyIP nginx config
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          mkdir -p /tmp/lego-test-conf
+          cat > /tmp/lego-test-conf/freemyip.conf << EOF
+          server {
+              listen 443 ssl;
+              server_name ${{ vars.FREEMYIP_DOMAIN }};
+              ssl_certificate     /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/privkey.pem;
+              location / { return 200 "ok"; add_header Content-Type text/plain; }
+          }
+          EOF
+
+      - name: Run container and request staging cert
+        if: steps.check.outputs.skip != 'true'
+        id: run_container
+        run: |
+          docker run -d \
+            --name nginx-lego-test \
+            -e CERTBOT_EMAIL=ci-test@github-actions.invalid \
+            -e STAGING=1 \
+            -e RENEWAL_INTERVAL=9999d \
+            -e CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials \
+            -v /tmp/lego-test-creds:/etc/letsencrypt/credentials:ro \
+            -v /tmp/lego-test-conf:/etc/nginx/user_conf.d:ro \
+            -v lego-test-certs:/etc/letsencrypt \
+            -p 8080:80 \
+            -p 8443:443 \
+            docker-nginx-lego:integration-test
+          # Wait up to 90s for cert to appear
+          for i in $(seq 1 18); do
+            sleep 5
+            if docker exec nginx-lego-test test -f /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem 2>/dev/null; then
+              echo "cert_obtained=true" >> $GITHUB_OUTPUT
+              break
+            fi
+            echo "Waiting for cert... attempt $i/18"
+          done
+
+      - name: Verify certificate file exists
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          if [ "${{ steps.run_container.outputs.cert_obtained }}" != "true" ]; then
+            echo "Certificate was not obtained within timeout"
+            docker logs nginx-lego-test
+            exit 1
+          fi
+          echo "Certificate obtained successfully"
+
+      - name: Print container logs
+        if: steps.check.outputs.skip != 'true' && always()
+        run: docker logs nginx-lego-test || true
+
+      - name: Stop and remove container
+        if: steps.check.outputs.skip != 'true' && always()
+        run: |
+          docker stop nginx-lego-test || true
+          docker rm nginx-lego-test || true
+          docker volume rm lego-test-certs || true

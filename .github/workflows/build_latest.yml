@@ -14,12 +14,11 @@ on:
       - "master"
     paths:
       - "src/Dockerfile*"
-      - "src/requirements.txt"
 
 jobs:
   docker_buildx_debian:
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 30
     steps:
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
@@ -45,11 +44,11 @@ jobs:
             linux/arm64
             linux/arm/v7
           push: ${{ github.event_name != 'pull_request' }}
-          tags: jonasal/nginx-certbot:latest
+          tags: emulator/docker-nginx-lego:latest
 
   docker_buildx_alpine:
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 20
     steps:
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
@@ -73,4 +72,4 @@ jobs:
             linux/amd64
             linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: jonasal/nginx-certbot:latest-alpine
+          tags: emulator/docker-nginx-lego:latest-alpine
