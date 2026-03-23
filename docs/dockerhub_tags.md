@@ -1,96 +1,57 @@
 # Available Image Tags
-The `latest` tag will always build the head of the
-[master branch][master-branch], so please use a more specific one if you can
-since master should not be considered "stable".
 
-All the tags since `2.0.0` are built for the following architectures:
+Tags encode the exact component versions inside the image. Use a specific tag
+in production — `latest` tracks `master` and is not considered stable.
 
-- linux/amd64
-- linux/386 (:warning: not available for [Alpine][alpine-i386] since Nginx `v1.21.0`)
-- linux/arm64
-- linux/arm/v7 (:warning: not available for Alpine since [tag `v3.1.2`][alpine-armv7])
+## Tag Format
 
-and it is possible to append `-alpine` to any tag from `2.0.1` to get an Alpine
-based image instead. The less specific tags will move as those more specific
-are updated.
+```
+lego<LEGO_VERSION>-nginx<NGINX_VERSION>
+lego<LEGO_VERSION>-nginx<NGINX_VERSION>-alpine
+```
 
+For script-only fixes (no component version change), a revision suffix is
+appended:
 
-| Major | Minor | Patch | Nginx              |
-| ----: | ----: | ----: | :----------------- |
-| 6     | 6.1   | 6.1.0 | 6.1.0-nginx1.29.5  |
-|       | 6.0   | 6.0.1 | 6.0.1-nginx1.29.5  |
-|       |       |       | 6.0.1-nginx1.29.4  |
-|       |       |       | 6.0.1-nginx1.29.3  |
-|       |       |       | 6.0.1-nginx1.29.2  |
-|       |       |       | 6.0.1-nginx1.29.1  |
-|       |       |       | 6.0.1-nginx1.29.0  |
-|       |       | 6.0.0 | 6.0.0-nginx1.29.0  |
-|       |       |       | 6.0.0-nginx1.28.0  |
-| 5     | 5.6   | 5.6.0 | 5.6.0-nginx1.28.0  |
-|       |       |       | 5.6.0-nginx1.27.5  |
-|       | 5.5   | 5.5.0 | 5.5.0-nginx1.27.5  |
-|       | 5.4   | 5.4.1 | 5.4.1-nginx1.27.5  |
-|       |       |       | 5.4.1-nginx1.27.4  |
-|       |       | 5.4.0 | 5.4.0-nginx1.27.4  |
-|       |       |       | 5.4.0-nginx1.27.3  |
-|       |       |       | 5.4.0-nginx1.27.2  |
-|       |       |       | 5.4.0-nginx1.27.0  |
-|       | 5.3   | 5.3.0 | 5.3.0-nginx1.27.0  |
-|       | 5.2   | 5.2.1 | 5.2.1-nginx1.27.0  |
-|       |       | 5.2.0 | 5.2.0-nginx1.27.0  |
-|       |       |       | 5.2.0-nginx1.26.0  |
-|       | 5.1   | 5.1.1 | 5.1.1-nginx1.26.0  |
-|       |       | 5.1.0 | 5.1.0-nginx1.26.0  |
-|       |       |       | 5.1.0-nginx1.25.5  |
-|       |       |       | 5.1.0-nginx1.25.4  |
-|       | 5.0   | 5.0.1 | 5.0.1-nginx1.25.4  |
-|       |       |       | 5.0.1-nginx1.25.3  |
-|       |       | 5.0.0 | 5.0.0-nginx1.25.3  |
-|       |       |       | 5.0.0-nginx1.25.2  |
-| 4     | 4.3   | 4.3.0 | 4.3.0-nginx1.25.2  |
-|       |       |       | 4.3.0-nginx1.25.1  |
-|       | 4.2   | 4.2.1 | 4.2.1-nginx1.25.0  |
-|       |       |       | 4.2.1-nginx1.23.4  |
-|       |       | 4.2.0 | 4.2.0-nginx1.23.4  |
-|       |       |       | 4.2.0-nginx1.23.3  |
-|       | 4.1   | 4.1.0 | 4.1.0-nginx1.23.3  |
-|       | 4.0   | 4.0.0 | 4.0.0-nginx1.23.3  |
-| 3     | 3.3   | 3.3.1 | 3.3.1-nginx1.23.3  |
-|       |       | 3.3.0 | 3.3.0-nginx1.23.3  |
-|       | 3.2   | 3.2.2 | 3.2.2-nginx1.23.3  |
-|       |       |       | 3.2.2-nginx1.23.2  |
-|       |       | 3.2.1 | 3.2.1-nginx1.23.2  |
-|       |       |       | 3.2.1-nginx1.23.1  |
-|       |       | 3.2.0 | 3.2.0-nginx1.23.1  |
-|       |       |       | 3.2.0-nginx1.23.0  |
-|       | 3.1   | 3.1.3 | 3.1.3-nginx1.23.0  |
-|       |       | 3.1.2 | 3.1.2-nginx1.23.0  |
-|       |       |       | 3.1.2-nginx1.21.6  |
-|       |       | 3.1.1 | 3.1.1-nginx1.21.6  |
-|       |       | 3.1.0 | 3.1.0-nginx1.21.6  |
-|       | 3.0   | 3.0.1 | 3.0.1-nginx1.21.6  |
-|       |       |       | 3.0.1-nginx1.21.5  |
-|       |       |       | 3.0.1-nginx1.21.4  |
-|       |       |       | 3.0.1-nginx1.21.3  |
-|       |       | 3.0.0 | 3.0.0-nginx1.21.3  |
-| 2     | 2.4   | 2.4.1 | 2.4.1-nginx1.21.3  |
-|       |       |       | 2.4.1-nginx1.21.1  |
-|       |       |       | 2.4.1-nginx1.21.0  |
-|       |       | 2.4.0 | 2.4.0-nginx1.21.0  |
-|       | 2.3   | 2.3.0 | 2.3.0-nginx1.21.0  |
-|       | 2.2   | 2.2.0 | 2.2.0-nginx1.21.0  |
-|       |       |       | 2.2.0-nginx1.19.10 |
-|       | 2.1   | 2.1.0 | 2.1.0-nginx1.19.10 |
-|       | 2.0   | 2.0.1 | 2.0.1-nginx1.19.10 |
-|       |       | 2.0.0 | 2.0.0-nginx1.19.10 |
-|       |       | 1.3.0 | 1.3.0-nginx1.19.10 |
-|       |       |       | 1.3.0-nginx1.19.9  |
-|       |       | 1.2.0 | 1.2.0-nginx1.19.9  |
-|       |       |       | 1.2.0-nginx1.19.8  |
-|       |       | 1.1.0 | 1.1.0-nginx1.19.8  |
-|       |       |       | 1.1.0-nginx1.19.7  |
-|       |       | 1.0.0 | 1.0.0-nginx1.19.7  |
+```
+lego<LEGO_VERSION>-nginx<NGINX_VERSION>-r<N>
+lego<LEGO_VERSION>-nginx<NGINX_VERSION>-r<N>-alpine
+```
 
-[master-branch]: https://github.com/JonasAlfredsson/docker-nginx-certbot/tree/master
-[alpine-i386]: https://github.com/JonasAlfredsson/docker-nginx-certbot/issues/77
-[alpine-armv7]: https://github.com/JonasAlfredsson/docker-nginx-certbot/commit/3fc2d64d3f20aa2163598e57e59a95a79cde1f37
+Shorter tags (`lego<X.Y.Z>`, `lego<X.Y.Z>-alpine`) always point to the latest
+nginx for that lego version, and move as updates are released.
+
+## Current Tags
+
+| Lego    | Nginx  | Tag                              |
+| :------ | :----- | :------------------------------- |
+| 4.33.0  | 1.29.5 | `lego4.33.0-nginx1.29.5`         |
+|         |        | `lego4.33.0-nginx1.29.5-alpine`  |
+
+## Architecture Support
+
+| Architecture  | Debian | Alpine |
+| :------------ | :----- | :----- |
+| linux/amd64   | ✅     | ✅     |
+| linux/386     | ✅     | ❌     |
+| linux/arm64   | ✅     | ✅     |
+| linux/arm/v7  | ✅     | ❌     |
+
+## Update Cadence
+
+- **Lego bumps** — automated weekly via `check-lego-update` workflow; opens a
+  PR updating `ARG LEGO_VERSION` in both Dockerfiles.
+- **Nginx bumps** — automated weekly via `check-nginx-update` workflow; opens
+  a PR updating the `FROM nginx:` base image line.
+- **Script-only fixes** — manual; tagged with a `-r<N>` revision suffix.
+- **Base image security patches** — nginx Docker Hub rebuilds the same tag
+  periodically; re-pulling the image picks these up without a version bump.
+
+## Upstream
+
+This image is a fork of [`JonasAlfredsson/docker-nginx-certbot`][upstream] with
+certbot replaced by [lego][lego]. For the upstream tag history see the
+[upstream repo][upstream].
+
+[upstream]: https://github.com/JonasAlfredsson/docker-nginx-certbot
+[lego]: https://github.com/go-acme/lego

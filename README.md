@@ -149,7 +149,7 @@ docker run -it -p 80:80 -p 443:443 \
            --env CERTBOT_EMAIL=your@email.org \
            -v $(pwd)/nginx_secrets:/etc/letsencrypt \
            -v $(pwd)/user_conf.d:/etc/nginx/user_conf.d:ro \
-           --name nginx-lego emulator/docker-nginx-lego:latest
+           --name nginx-lego emulator/docker-nginx-lego:lego4.33.0-nginx1.29.5
 ```
 
 > You should be able to detach from the container by holding `Ctrl` and pressing
@@ -180,7 +180,7 @@ docker-compose up
 
 ## Build It Yourself
 ```Dockerfile
-FROM emulator/docker-nginx-lego:latest
+FROM emulator/docker-nginx-lego:lego4.33.0-nginx1.29.5
 COPY conf.d/* /etc/nginx/conf.d/
 ```
 

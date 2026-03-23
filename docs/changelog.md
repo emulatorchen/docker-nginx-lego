@@ -31,7 +31,7 @@
 - Certbot updated two major versions (`2.11.0` -> `4.1.1`).
   - This is the main reason for making a major version bump for us.
 - The scripts now handle nested folders in `user_conf.d/`.
-- It is now possible to have [multiple credentials](./certbot_authenticators.md#unique-credentials-files) files for the same DNS authenticator.
+- It is now possible to have [multiple credentials](./lego_providers.md#unique-credentials-files) files for the same DNS authenticator.
 
 ### 5.6.0
 - Added gandi DNS authenticator.
@@ -149,12 +149,12 @@
 
 ### 3.0.0
 - Add support for DNS-01 challenges.
-  - Check out the list of all currently [supported authenticators](./certbot_authenticators.md).
+  - Check out the list of all currently [supported providers](./lego_providers.md).
   - This also means it is now possible to request wildcard certificates!
   - PR by [@XaF][32].
 - Make it possible to define which authenticator to use on a certificate basis.
   - Like with [ECDSA/RSA](./advanced_usage.md#multi-certificate-setup), you can
-    [add the authenicator's name](./certbot_authenticators.md#using-a-dns-01-authenticator-for-specific-certificates-only)
+    [add the provider's name](./lego_providers.md#cert-specific-provider-override)
     in the `cert_name` to override the default.
   - PR by [@XaF][32].
 - Make it possible to use same `cert_name` across multiple config files.

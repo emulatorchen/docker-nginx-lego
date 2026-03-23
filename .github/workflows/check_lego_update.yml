@@ -15,7 +15,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
 
       - name: Get latest lego release
         id: latest
@@ -52,7 +52,7 @@ jobs:
 
       - name: Open pull request
         if: steps.compare.outputs.up_to_date == 'false'
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8.1.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: "bump/lego-${{ steps.latest.outputs.version }}"
