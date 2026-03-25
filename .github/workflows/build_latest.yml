@@ -46,6 +46,23 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: emulator/docker-nginx-lego:latest
 
+  update_dockerhub_description:
+    name: "Update Docker Hub description"
+    runs-on: ubuntu-latest
+    needs: [docker_buildx_debian, docker_buildx_alpine]
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: emulator/docker-nginx-lego
+          readme-filepath: ./docs/dockerhub_description.md
+
   docker_buildx_alpine:
     runs-on: ubuntu-latest
     timeout-minutes: 45

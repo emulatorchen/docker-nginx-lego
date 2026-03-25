@@ -8,7 +8,94 @@ on:
       - "lego[0-9]*.[0-9]*.[0-9]*-nginx[1-9]*.[0-9]*.[0-9]*"
 
 jobs:
+  integration_check:
+    name: "Integration test (DNS-01 staging cert)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.0.0
+
+      - name: Build Debian image (amd64)
+        uses: docker/build-push-action@v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: docker-nginx-lego:integration-test
+
+      - name: Create credentials directory
+        run: mkdir -p /tmp/lego-test-creds
+
+      - name: Write FreeMyIP credentials
+        run: |
+          cat > /tmp/lego-test-creds/freemyip.ini << 'EOF'
+          FREEMYIP_TOKEN=${{ secrets.FREEMYIP_TOKEN }}
+          EOF
+
+      - name: Write FreeMyIP nginx config
+        run: |
+          mkdir -p /tmp/lego-test-conf
+          cat > /tmp/lego-test-conf/freemyip.conf << EOF
+          server {
+              listen 443 ssl;
+              server_name ${{ vars.FREEMYIP_DOMAIN }};
+              ssl_certificate     /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/privkey.pem;
+              location / { return 200 "ok"; add_header Content-Type text/plain; }
+          }
+          EOF
+
+      - name: Run container and request staging cert
+        id: run_container
+        run: |
+          docker run -d \
+            --name nginx-lego-test \
+            -e CERTBOT_EMAIL=ci-test@github-actions.invalid \
+            -e STAGING=1 \
+            -e RENEWAL_INTERVAL=9999d \
+            -e CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials \
+            -v /tmp/lego-test-creds:/etc/letsencrypt/credentials:ro \
+            -v /tmp/lego-test-conf:/etc/nginx/user_conf.d:ro \
+            -v lego-test-certs:/etc/letsencrypt \
+            -p 8080:80 \
+            -p 8443:443 \
+            docker-nginx-lego:integration-test
+          for i in $(seq 1 18); do
+            sleep 5
+            if docker exec nginx-lego-test test -f /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem 2>/dev/null; then
+              echo "cert_obtained=true" >> $GITHUB_OUTPUT
+              break
+            fi
+            echo "Waiting for cert... attempt $i/18"
+          done
+
+      - name: Verify certificate obtained
+        run: |
+          if [ "${{ steps.run_container.outputs.cert_obtained }}" != "true" ]; then
+            echo "Certificate was not obtained within timeout"
+            docker logs nginx-lego-test
+            exit 1
+          fi
+          echo "Certificate obtained successfully"
+
+      - name: Print container logs
+        if: always()
+        run: docker logs nginx-lego-test || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop nginx-lego-test || true
+          docker rm nginx-lego-test || true
+          docker volume rm lego-test-certs || true
+
   docker_buildx_debian:
+    needs: integration_check
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -59,6 +146,7 @@ jobs:
           tags: ${{ steps.tags.outputs.value }}
 
   docker_buildx_alpine:
+    needs: integration_check
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
