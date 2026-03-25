@@ -1,0 +1,94 @@
+name: "release"
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Patch revision (e.g. 1 → tag gets -r1 suffix). Leave blank for a base release."
+        required: false
+        default: ""
+      notes:
+        description: "Release notes. Leave blank to auto-generate from merged PRs. Provide text to prepend before auto-generated notes, or check 'override' to use only what you write here."
+        required: false
+        default: ""
+      override_notes:
+        description: "Override auto-generated notes entirely (use only the notes above)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Extract versions
+        id: versions
+        run: |
+          lego=$(grep -m1 '^ARG LEGO_VERSION=' src/Dockerfile | cut -d= -f2)
+          nginx=$(grep -m1 '^FROM nginx:' src/Dockerfile | sed 's/FROM nginx://')
+          revision="${{ inputs.revision }}"
+          suffix=""
+          [ -n "$revision" ] && suffix="-r${revision}"
+          tag="lego${lego}-nginx${nginx}${suffix}"
+          echo "lego=$lego"   >> $GITHUB_OUTPUT
+          echo "nginx=$nginx" >> $GITHUB_OUTPUT
+          echo "tag=$tag"     >> $GITHUB_OUTPUT
+
+      - name: Create and push tag
+        run: |
+          git tag "${{ steps.versions.outputs.tag }}"
+          git push origin "${{ steps.versions.outputs.tag }}"
+
+      - name: Create GitHub release (auto-generated notes)
+        if: inputs.notes == '' && !inputs.override_notes
+        run: |
+          gh release create "${{ steps.versions.outputs.tag }}" \
+              --title "${{ steps.versions.outputs.tag }}" \
+              --generate-notes \
+              --latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub release (prepend custom notes)
+        if: inputs.notes != '' && !inputs.override_notes
+        run: |
+          prev_tag=$(git tag --sort=-creatordate | grep -v "^${{ steps.versions.outputs.tag }}$" | head -1)
+          if [ -n "$prev_tag" ]; then
+            generated=$(gh api repos/${{ github.repository }}/releases/generate-notes \
+              -f tag_name="${{ steps.versions.outputs.tag }}" \
+              -f previous_tag_name="$prev_tag" \
+              --jq '.body')
+          else
+            generated=""
+          fi
+          body="${{ inputs.notes }}"
+          [ -n "$generated" ] && body="${body}"$'\n\n'"${generated}"
+          gh release create "${{ steps.versions.outputs.tag }}" \
+              --title "${{ steps.versions.outputs.tag }}" \
+              --notes "$body" \
+              --latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub release (override notes)
+        if: inputs.override_notes
+        run: |
+          gh release create "${{ steps.versions.outputs.tag }}" \
+              --title "${{ steps.versions.outputs.tag }}" \
+              --notes "${{ inputs.notes }}" \
+              --latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "### Released ${{ steps.versions.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- [GitHub release](https://github.com/${{ github.repository }}/releases/tag/${{ steps.versions.outputs.tag }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [Actions](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker Hub: \`emulator/docker-nginx-lego:${{ steps.versions.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY

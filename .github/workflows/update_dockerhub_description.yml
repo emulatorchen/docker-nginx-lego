@@ -1,0 +1,25 @@
+name: "update-dockerhub-description"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "main"
+      - "master"
+    paths:
+      - "docs/dockerhub_description.md"
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: emulator/docker-nginx-lego
+          readme-filepath: ./docs/dockerhub_description.md
