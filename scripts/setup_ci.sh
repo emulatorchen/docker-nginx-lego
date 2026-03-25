@@ -29,7 +29,7 @@
 
 set -euo pipefail
 
-# ─── CONFIG ──────────────────────────────────────────────────────────────────
+# -- CONFIG --
 # Edit this section when adapting for a new project.
 
 # GitHub repo in "owner/name" format.
@@ -50,14 +50,14 @@ SECRET_ENVS=(  "DOCKERHUB_TOKEN"  "FREEMYIP_TOKEN" )
 VAR_NAMES=(  "FREEMYIP_DOMAIN"       "FREEMYIP_CERT_NAME"           )
 VAR_VALUES=( "this.freemyip.com"     "this-freemyip.dns-freemyip"   )
 
-# ─── END CONFIG ───────────────────────────────────────────────────────────────
+# -- END CONFIG --
 
 APPLY=false
 if [[ "${1:-}" == "--apply" ]]; then
     APPLY=true
 fi
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# -- Helpers --
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 
@@ -104,7 +104,7 @@ check_prereqs() {
     $all_ok || exit 1
 }
 
-# ─── Docker Hub ───────────────────────────────────────────────────────────────
+# -- Docker Hub --
 
 dockerhub_login() {
     prompt_secret DOCKERHUB_PASSWORD "Docker Hub password for '${DOCKERHUB_USERNAME}'"
@@ -153,7 +153,7 @@ setup_dockerhub_repo() {
     fi
 }
 
-# ─── GitHub ───────────────────────────────────────────────────────────────────
+# -- GitHub --
 
 setup_github_actions() {
     info "--- GitHub Actions settings ---"
@@ -220,7 +220,7 @@ setup_github_vars() {
     done
 }
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
+# -- Main --
 
 main() {
     echo
