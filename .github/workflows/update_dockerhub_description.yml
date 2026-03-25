@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v6.0.2
 
       - name: Update Docker Hub description
         uses: peter-evans/dockerhub-description@v4.0.0
@@ -26,3 +26,14 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: emulator/docker-nginx-lego
           readme-filepath: ./docs/dockerhub_description.md
+
+      - name: Update Docker Hub repository link
+        run: |
+          token=$(curl -s -X POST "https://hub.docker.com/v2/users/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"${{ secrets.DOCKERHUB_USERNAME }}\",\"password\":\"${{ secrets.DOCKERHUB_TOKEN }}\"}" \
+            | grep -o '"token":"[^"]*"' | sed 's/"token":"//;s/"//')
+          curl -s -X PATCH "https://hub.docker.com/v2/repositories/emulator/docker-nginx-lego/" \
+            -H "Authorization: Bearer ${token}" \
+            -H "Content-Type: application/json" \
+            -d "{\"vcs_url\":\"https://github.com/${{ github.repository }}\"}"
