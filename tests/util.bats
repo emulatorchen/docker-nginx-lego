@@ -161,8 +161,8 @@ load "${SCRIPTS_DIR}/util.sh"
 
 }
 
-@test "parse_config_file supports a single certbot_domain directive" {
-  local fixture="${FIXTURES_DIR}/nginx_config/single_files/single_certbot_domain_directive.conf"
+@test "parse_config_file supports a single lego_domain directive" {
+  local fixture="${FIXTURES_DIR}/nginx_config/single_files/single_lego_domain_directive.conf"
 
   local -A certificates
   parse_config_file "${fixture}" certificates
@@ -176,8 +176,8 @@ load "${SCRIPTS_DIR}/util.sh"
   [ "${server_names[0]}" == "*.example.org" ]
 }
 
-@test "parse_config_file supports multiple certbot_domain directives" {
-  local fixture="${FIXTURES_DIR}/nginx_config/single_files/multi_certbot_domain_directive.conf"
+@test "parse_config_file supports multiple lego_domain directives" {
+  local fixture="${FIXTURES_DIR}/nginx_config/single_files/multi_lego_domain_directive.conf"
 
   local -A certificates
   parse_config_file "${fixture}" certificates

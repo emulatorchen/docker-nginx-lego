@@ -5,12 +5,99 @@ on:
     branches-ignore:
       - "**"
     tags:
-      - "v[1-9].[0-9]+.[0-9]+-nginx[1-9].[0-9]+.[0-9]+"
+      - "lego[0-9]*.[0-9]*.[0-9]*-nginx[1-9]*.[0-9]*.[0-9]*"
 
 jobs:
-  docker_buildx_debian:
+  integration_check:
+    name: "Integration test (DNS-01 staging cert)"
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.0.0
+
+      - name: Build Debian image (amd64)
+        uses: docker/build-push-action@v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: docker-nginx-lego:integration-test
+
+      - name: Create credentials directory
+        run: mkdir -p /tmp/lego-test-creds
+
+      - name: Write FreeMyIP credentials
+        run: |
+          cat > /tmp/lego-test-creds/freemyip.ini << 'EOF'
+          FREEMYIP_TOKEN=${{ secrets.FREEMYIP_TOKEN }}
+          EOF
+
+      - name: Write FreeMyIP nginx config
+        run: |
+          mkdir -p /tmp/lego-test-conf
+          cat > /tmp/lego-test-conf/freemyip.conf << EOF
+          server {
+              listen 443 ssl;
+              server_name ${{ vars.FREEMYIP_DOMAIN }};
+              ssl_certificate     /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/privkey.pem;
+              location / { return 200 "ok"; add_header Content-Type text/plain; }
+          }
+          EOF
+
+      - name: Run container and request staging cert
+        id: run_container
+        run: |
+          docker run -d \
+            --name nginx-lego-test \
+            -e CERTBOT_EMAIL=${{ secrets.CERTBOT_EMAIL }} \
+            -e STAGING=1 \
+            -e RENEWAL_INTERVAL=9999d \
+            -e CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials \
+            -v /tmp/lego-test-creds:/etc/letsencrypt/credentials:ro \
+            -v /tmp/lego-test-conf:/etc/nginx/user_conf.d:ro \
+            -v lego-test-certs:/etc/letsencrypt \
+            -p 8080:80 \
+            -p 8443:443 \
+            docker-nginx-lego:integration-test
+          for i in $(seq 1 18); do
+            sleep 5
+            if docker exec nginx-lego-test test -f /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem 2>/dev/null; then
+              echo "cert_obtained=true" >> $GITHUB_OUTPUT
+              break
+            fi
+            echo "Waiting for cert... attempt $i/18"
+          done
+
+      - name: Verify certificate obtained
+        run: |
+          if [ "${{ steps.run_container.outputs.cert_obtained }}" != "true" ]; then
+            echo "Certificate was not obtained within timeout"
+            docker logs nginx-lego-test
+            exit 1
+          fi
+          echo "Certificate obtained successfully"
+
+      - name: Print container logs
+        if: always()
+        run: docker logs nginx-lego-test || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop nginx-lego-test || true
+          docker rm nginx-lego-test || true
+          docker volume rm lego-test-certs || true
+
+  docker_buildx_debian:
+    needs: integration_check
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
@@ -19,15 +106,29 @@ jobs:
           swap_size: 9
 
       - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@v2
+        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
         with:
           should_login: ${{ github.event_name != 'pull_request' }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract version numbers from GitHub reference
-        id: tagger
         run: bash .github/version_extractor.sh ${GITHUB_REF} >> $GITHUB_ENV
+
+      - name: Compute Debian tags
+        id: tags
+        run: |
+          BASE="emulator/docker-nginx-lego"
+          L="${LEGO_VERSION}"
+          N="${NGINX_VERSION}"
+          R="${REVISION}"
+          {
+            echo 'value<<EOF'
+            [ -n "$R" ] && echo "${BASE}:lego${L}-nginx${N}-r${R}"
+            echo "${BASE}:lego${L}-nginx${N}"
+            echo "${BASE}:lego${L}"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
 
       - name: Build and push all Debian images
         uses: docker/build-push-action@v7.0.0
@@ -42,15 +143,12 @@ jobs:
           pull: true
           no-cache: true
           push: true
-          tags: |
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}-nginx${{ env.NGINX_VERSION }}
+          tags: ${{ steps.tags.outputs.value }}
 
   docker_buildx_alpine:
+    needs: integration_check
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 45
     steps:
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
@@ -59,15 +157,29 @@ jobs:
           swap_size: 9
 
       - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@v2
+        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
         with:
           should_login: ${{ github.event_name != 'pull_request' }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract version numbers from GitHub reference
-        id: tagger
         run: bash .github/version_extractor.sh ${GITHUB_REF} >> $GITHUB_ENV
+
+      - name: Compute Alpine tags
+        id: tags
+        run: |
+          BASE="emulator/docker-nginx-lego"
+          L="${LEGO_VERSION}"
+          N="${NGINX_VERSION}"
+          R="${REVISION}"
+          {
+            echo 'value<<EOF'
+            [ -n "$R" ] && echo "${BASE}:lego${L}-nginx${N}-r${R}-alpine"
+            echo "${BASE}:lego${L}-nginx${N}-alpine"
+            echo "${BASE}:lego${L}-alpine"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
 
       - name: Build and push all Alpine images
         uses: docker/build-push-action@v7.0.0
@@ -80,8 +192,4 @@ jobs:
           pull: true
           no-cache: true
           push: true
-          tags: |
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}-alpine
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}-alpine
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}-alpine
-            jonasal/nginx-certbot:${{ env.APP_MAJOR }}.${{ env.APP_MINOR }}.${{ env.APP_PATCH }}-nginx${{ env.NGINX_VERSION }}-alpine
+          tags: ${{ steps.tags.outputs.value }}

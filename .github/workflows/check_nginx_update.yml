@@ -1,0 +1,74 @@
+name: "check-nginx-update"
+
+on:
+  schedule:
+    # Run every Monday at 09:00 UTC (1h after check-lego-update)
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check_nginx_version:
+    name: "Check for new nginx release"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Get latest nginx release
+        id: latest
+        run: |
+          LATEST=$(curl -s "https://api.github.com/repos/nginx/nginx/tags?per_page=50" \
+            | jq -r '.[].name' \
+            | grep -E '^release-[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sed 's/^release-//' \
+            | sort -V \
+            | tail -1)
+          echo "version=${LATEST}" >> $GITHUB_OUTPUT
+          echo "Latest nginx release: ${LATEST}"
+
+      - name: Get pinned nginx version from Dockerfile
+        id: pinned
+        run: |
+          PINNED=$(grep -m1 '^FROM nginx:' src/Dockerfile | sed 's/FROM nginx://')
+          echo "version=${PINNED}" >> $GITHUB_OUTPUT
+          echo "Pinned nginx version: ${PINNED}"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          if [ "${{ steps.latest.outputs.version }}" = "${{ steps.pinned.outputs.version }}" ]; then
+            echo "up_to_date=true" >> $GITHUB_OUTPUT
+            echo "nginx is up to date (${{ steps.pinned.outputs.version }})"
+          else
+            echo "up_to_date=false" >> $GITHUB_OUTPUT
+            echo "New nginx version available: ${{ steps.latest.outputs.version }} (current: ${{ steps.pinned.outputs.version }})"
+          fi
+
+      - name: Update nginx version in Dockerfiles
+        if: steps.compare.outputs.up_to_date == 'false'
+        run: |
+          NEW="${{ steps.latest.outputs.version }}"
+          sed -i "s/^FROM nginx:.*/FROM nginx:${NEW}/" src/Dockerfile
+          sed -i "s/^FROM nginx:.*/FROM nginx:${NEW}-alpine/" src/Dockerfile-alpine
+
+      - name: Open pull request
+        if: steps.compare.outputs.up_to_date == 'false'
+        uses: peter-evans/create-pull-request@v8.1.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: "bump/nginx-${{ steps.latest.outputs.version }}"
+          commit-message: "Bump nginx from ${{ steps.pinned.outputs.version }} to ${{ steps.latest.outputs.version }}"
+          title: "Bump nginx from ${{ steps.pinned.outputs.version }} to ${{ steps.latest.outputs.version }}"
+          body: |
+            Automated nginx version bump.
+
+            - **From:** `${{ steps.pinned.outputs.version }}`
+            - **To:** `${{ steps.latest.outputs.version }}`
+            - **Release notes:** https://nginx.org/en/CHANGES
+
+            This PR was opened automatically by the `check-nginx-update` workflow.
+            The build CI will validate the new image across all platforms.
+          labels: "dependencies"

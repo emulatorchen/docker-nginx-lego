@@ -19,12 +19,12 @@ docker run -it -p 80:80 -p 443:443 \
            --env CERTBOT_EMAIL=your@email.org \
            --env STAGING=1 \
            --env DEBUG=1 \
-           jonasal/nginx-certbot:latest
+           emulator/docker-nginx-lego:latest
 ```
 
 Note that when switching to production certificates you either need to remove the
 staging certificates or issue a [force renewal](./advanced_usage.md#manualforce-renewal)
-since by default certbot will *not* request new certificates if any valid
+since by default lego will *not* request new certificates if any valid
 (staging or production) certificates already exist.
 
 ## Creating a Server `.conf` File
@@ -46,7 +46,7 @@ your domain. You should now be greeted with the string \
 
 The files [already present](../src/nginx_conf.d) inside the container's config
 folder are there to handle redirection to HTTPS for all incoming requests that
-are not part of the certbot challenge requests, so be careful to not overwrite
+are not part of the lego challenge requests, so be careful to not overwrite
 these unless you know what you are doing.
 
 ## The `user_conf.d` Folder
@@ -74,13 +74,12 @@ ssl_certificate_key /etc/letsencrypt/live/test-name/privkey.pem;
 ```
 
 and only extract the part which here says "`test-name`". This is the value that
-will be provided to the [`--cert-name`][14] argument for certbot, so while you
-may set basically any name you want here I suggest you keep it descriptive for
-your own sake.
+will be used as the cert name by lego, so while you may set basically any
+name you want here I suggest you keep it descriptive for your own sake.
 
 > ADVANCED: It is possible to add keywords to this certificate name in order
 > to use [specific algorithms](./advanced_usage.md#multi-certificate-setup) or
-> use other [authenitcators](./certbot_authenticators.md#using-a-dns-01-authenticator-for-specific-certificates-only).
+> use a specific [DNS provider](./lego_providers.md).
 
 After this the script will find all the lines that contain `server_name` and
 make a list of all the domain names that exist on the same line. So a file
@@ -110,7 +109,7 @@ add any additional findings to it. So in the end we will get a single request
 that looks something like this:
 
 ```
-certbot --cert-name "test-name" ... -d yourdomain.org -d www.yourdomain.org -d sub.yourdomain.org
+lego --domains yourdomain.org --domains www.yourdomain.org --domains sub.yourdomain.org ...
 ```
 
 The scripts are quite powerful when it comes to customizability for defining
@@ -121,7 +120,7 @@ the Advanced Usage document.
 
 Furthermore, we support wildcard domain names, but that requires you to use an
 authenticator capable of DNS-01 challenges, and more info about that may be
-found in the [certbot_authenticators.md](./certbot_authenticators.md) document.
+found in the [lego_providers.md](./lego_providers.md) document.
 
 
 ## ECDSA and RSA Certificates
@@ -129,7 +128,7 @@ found in the [certbot_authenticators.md](./certbot_authenticators.md) document.
 established RSA certificates, and are supposedly more secure while being much
 smaller. The downside with these is that they are not supported by all clients
 yet, but if you don't expect to serve anything outisde the "Modern" row in
-[Mozillas compatibility table][17] you should not hesitate to configure certbot
+[Mozillas compatibility table][17] you should not hesitate to configure lego
 to request these types of certificates.
 
 This is achieved by setting the [environment variable](../README.md#optional)
@@ -151,9 +150,9 @@ is explained further in the
 
 
 ## Renewal Check Interval
-This container will automatically start a certbot certificate renewal check
+This container will automatically start a lego certificate renewal check
 after the time duration that is defined in the environmental variable
-`RENEWAL_INTERVAL` has passed. After certbot has done its stuff, the code will
+`RENEWAL_INTERVAL` has passed. After lego has done its stuff, the code will
 return and wait the defined time before triggering again.
 
 This process is very simple, and is just a `while [ true ];` loop with a `sleep`
@@ -161,7 +160,7 @@ at the end:
 
 ```bash
 while [ true ]; do
-    # Run certbot...
+    # Run lego...
     sleep "$RENEWAL_INTERVAL"
 done
 ```
@@ -172,9 +171,9 @@ which values that are allowed in its [manual][4].
 
 The default is `8d`, since this allows for multiple retries per month, while
 keeping the output in the logs at a very low level. If nothing needs to be
-renewed certbot won't do anything, so it should be no problem setting it lower
+renewed lego won't do anything, so it should be no problem setting it lower
 if you want to. The only thing to think about is to not to make it longer than
-one month, because then you would [miss the window][6] where certbot would deem
+one month, because then you would [miss the window][6] where lego would deem
 it necessary to update the certificates.
 
 ## Diffie-Hellman Parameters
@@ -223,7 +222,7 @@ This can either be done by copying your own files into the container at
 [run it directly](../README.md#run-with-docker-run). In the former case you need
 to make sure you do not accidentally overwrite the two files present in this
 repository's [`nginx_conf.d/`](../src/nginx_conf.d) folder, since these are
-required in order for certbot to request certificates.
+required in order for lego to request certificates.
 
 The only obligatory environment variable for starting this container is the
 [`CERTBOT_EMAIL`](../README.md#required) one, just like in `@staticfloat`'s
@@ -253,7 +252,7 @@ something I have personally implemented in mine.
 [11]: https://github.com/nginxinc/docker-nginx
 [12]: https://github.com/staticfloat/docker-nginx-certbot#templating
 [13]: https://github.com/docker-library/docs/tree/master/nginx#using-environment-variables-in-nginx-configuration-new-in-119
-[14]: https://certbot.eff.org/docs/using.html#where-are-my-certificates
+[14]: https://go-acme.github.io/lego/
 [15]: https://www.digicert.com/faq/subject-alternative-name.htm
 [16]: https://sectigostore.com/blog/ecdsa-vs-rsa-everything-you-need-to-know/
 [17]: https://wiki.mozilla.org/Security/Server_Side_TLS

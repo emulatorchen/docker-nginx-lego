@@ -14,12 +14,11 @@ on:
       - "master"
     paths:
       - "src/Dockerfile*"
-      - "src/requirements.txt"
 
 jobs:
   docker_buildx_debian:
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 90
     steps:
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
@@ -28,7 +27,7 @@ jobs:
           swap_size: 9
 
       - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@v2
+        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
         with:
           should_login: ${{ github.event_name != 'pull_request' }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -45,11 +44,28 @@ jobs:
             linux/arm64
             linux/arm/v7
           push: ${{ github.event_name != 'pull_request' }}
-          tags: jonasal/nginx-certbot:latest
+          tags: emulator/docker-nginx-lego:latest
+
+  update_dockerhub_description:
+    name: "Update Docker Hub description"
+    runs-on: ubuntu-latest
+    needs: [docker_buildx_debian, docker_buildx_alpine]
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: emulator/docker-nginx-lego
+          readme-filepath: ./docs/dockerhub_description.md
 
   docker_buildx_alpine:
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 45
     steps:
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
@@ -58,7 +74,7 @@ jobs:
           swap_size: 9
 
       - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@v2
+        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
         with:
           should_login: ${{ github.event_name != 'pull_request' }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -73,4 +89,4 @@ jobs:
             linux/amd64
             linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: jonasal/nginx-certbot:latest-alpine
+          tags: emulator/docker-nginx-lego:latest-alpine

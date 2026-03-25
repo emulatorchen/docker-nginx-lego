@@ -1,0 +1,70 @@
+name: "check-lego-update"
+
+on:
+  schedule:
+    # Run every Monday at 08:00 UTC
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check_lego_version:
+    name: "Check for new lego release"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Get latest lego release
+        id: latest
+        run: |
+          LATEST=$(curl -s "https://api.github.com/repos/go-acme/lego/releases/latest" \
+            | jq -r '.tag_name' | sed 's/^v//')
+          echo "version=${LATEST}" >> $GITHUB_OUTPUT
+          echo "Latest lego release: ${LATEST}"
+
+      - name: Get pinned lego version from Dockerfile
+        id: pinned
+        run: |
+          PINNED=$(grep -m1 'ARG LEGO_VERSION=' src/Dockerfile | cut -d= -f2)
+          echo "version=${PINNED}" >> $GITHUB_OUTPUT
+          echo "Pinned lego version: ${PINNED}"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          if [ "${{ steps.latest.outputs.version }}" = "${{ steps.pinned.outputs.version }}" ]; then
+            echo "up_to_date=true" >> $GITHUB_OUTPUT
+            echo "lego is up to date (${PINNED})"
+          else
+            echo "up_to_date=false" >> $GITHUB_OUTPUT
+            echo "New lego version available: ${{ steps.latest.outputs.version }} (current: ${{ steps.pinned.outputs.version }})"
+          fi
+
+      - name: Update LEGO_VERSION in Dockerfiles
+        if: steps.compare.outputs.up_to_date == 'false'
+        run: |
+          NEW="${{ steps.latest.outputs.version }}"
+          sed -i "s/ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${NEW}/" src/Dockerfile
+          sed -i "s/ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${NEW}/" src/Dockerfile-alpine
+
+      - name: Open pull request
+        if: steps.compare.outputs.up_to_date == 'false'
+        uses: peter-evans/create-pull-request@v8.1.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: "bump/lego-${{ steps.latest.outputs.version }}"
+          commit-message: "Bump lego from ${{ steps.pinned.outputs.version }} to ${{ steps.latest.outputs.version }}"
+          title: "Bump lego from ${{ steps.pinned.outputs.version }} to ${{ steps.latest.outputs.version }}"
+          body: |
+            Automated lego version bump.
+
+            - **From:** `${{ steps.pinned.outputs.version }}`
+            - **To:** `${{ steps.latest.outputs.version }}`
+            - **Release notes:** https://github.com/go-acme/lego/releases/tag/v${{ steps.latest.outputs.version }}
+
+            This PR was opened automatically by the `check-lego-update` workflow.
+            The build CI will validate the new binary across all platforms.
+          labels: "dependencies"

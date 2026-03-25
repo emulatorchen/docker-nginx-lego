@@ -1,105 +1,57 @@
 FROM nginx:1.29.5
-LABEL maintainer="Jonas Alfredsson <jonas.alfredsson@protonmail.com>"
+LABEL maintainer="emulatorchen"
 
-ENV CERTBOT_DNS_AUTHENTICATORS="\
-    cloudflare \
-    digitalocean \
-    dnsimple \
-    dnsmadeeasy \
-    gehirn \
-    google \
-    linode \
-    luadns \
-    nsone \
-    ovh \
-    rfc2136 \
-    route53 \
-    sakuracloud \
-    ionos \
-    bunny \
-    duckdns \
-    hetzner \
-    infomaniak \
-    namecheap \
-    godaddy \
-    gandi \
-    powerdns \
-    porkbun \
-    "
+# FORK: Python/certbot/Rust removed. Only the static lego binary is installed.
+# Certbot is replaced by lego — a self-contained Go binary that covers all
+# HTTP-01 (webroot) and DNS-01 challenges across 150+ providers.
+#
+# When merging from upstream (JonasAlfredsson/docker-nginx-certbot):
+#   - Apply FROM version bump (this line) directly.
+#   - Review COPY scripts/ and lines after it for nginx-layer changes.
+#   - Skip all certbot/Python/Rust changes — they are intentionally removed.
 
-# Needed in order to install Python packages via PIP after PEP 668 was
-# introduced, but I believe this is safe since we are in a container without
-# any real need to cater to other programs/environments.
-ARG PIP_BREAK_SYSTEM_PACKAGES=1
-
-# We need to do some platfrom specific workarounds in the build script, so bring
-# this information in to the build environment.
-ARG TARGETPLATFORM
-
-# Through this we gain the ability to handle certbot upgrades through
-# dependabot pull requests.
-COPY requirements.txt /requirements.txt
+ARG LEGO_VERSION=4.33.0
+ARG TARGETARCH
+ARG TARGETVARIANT
 
 # Do a single run command to make the intermediary containers smaller.
 RUN set -ex && \
-# Install packages necessary during the build phase (for all architectures).
+# Install packages needed at runtime.
     apt-get update && \
     apt-get install -y --no-install-recommends \
-            build-essential \
-            curl \
-            libffi8 \
-            libffi-dev \
-            libssl-dev \
-            openssl \
-            pkg-config \
-            procps \
-            python3 \
-            python3-dev \
+        curl \
+        openssl \
+        procps \
     && \
-# Install the latest version of rustc/cargo if we are in an architecture that
-# needs to build the cryptography Python package.
-    if echo "$TARGETPLATFORM" | grep -E -q '^(linux/386|linux/arm64|linux/arm/v7)'; then \
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | /bin/sh -s -- -y \
-# For some reason the rustup script is unable to correctly identify the
-# environment if we are building an i386 image on an x86_64 system, so we need
-# to provide this information manually.
-        $(if [ "$TARGETPLATFORM" = "linux/386" ]; then \
-            echo "--default-host i686-unknown-linux-gnu"; \
-        fi) && \
-        . "$HOME/.cargo/env"; \
+# Install the static lego binary for certificate management.
+    if [ "${TARGETARCH}" = "arm" ] && [ -n "${TARGETVARIANT}" ]; then \
+        ARCH="arm${TARGETVARIANT}"; \
+    else \
+        ARCH=$(echo "${TARGETARCH:-$(uname -m)}" | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/armv7l/armv7/;s/armv6l/armv6/'); \
     fi && \
-# Install the latest version of PIP, Setuptools and Wheel.
-    curl -L 'https://bootstrap.pypa.io/get-pip.py' | python3 && \
-# Install certbot.
-    pip3 install -r /requirements.txt && \
-# And the supported extra authenticators.
-    pip3 install $(echo $CERTBOT_DNS_AUTHENTICATORS | sed 's/\(^\| \)/\1certbot-dns-/g') && \
-# Remove everything that is no longer necessary.
-    apt-get remove --purge -y \
-            build-essential \
-            curl \
-            libffi-dev \
-            libssl-dev \
-            pkg-config \
-            python3-dev \
-    && \
-    if echo "$TARGETPLATFORM" | grep -E -q '^(linux/386|linux/arm64|linux/arm/v7)'; then \
-        rustup self uninstall -y; \
-    fi && \
+    TARBALL="lego_v${LEGO_VERSION}_linux_${ARCH}.tar.gz" && \
+    curl -sL "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/${TARBALL}" \
+        -o "/tmp/${TARBALL}" && \
+    CHECKSUM=$(curl -sL "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/lego_${LEGO_VERSION}_checksums.txt" \
+        | grep " ${TARBALL}$" | awk '{print $1}') && \
+    echo "${CHECKSUM}  /tmp/${TARBALL}" | sha256sum -c - && \
+    tar -xz -C /usr/local/bin lego -f "/tmp/${TARBALL}" && \
+    rm "/tmp/${TARBALL}" && \
+    chmod +x /usr/local/bin/lego && \
+# Remove curl — no longer needed at runtime.
+    apt-get remove --purge -y curl && \
     apt-get autoremove -y && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
-    rm -rf /root/.cache && \
 # Create new directories and set correct permissions.
     mkdir -p /var/www/letsencrypt && \
     mkdir -p /etc/nginx/user_conf.d && \
-    chown www-data:www-data -R /var/www \
-    && \
+    chown www-data:www-data -R /var/www && \
 # Make sure there are no surprise config files inside the config folder.
     rm -f /etc/nginx/conf.d/*
 
 # Copy in our "default" Nginx server configurations, which make sure that the
-# ACME challenge requests are correctly forwarded to certbot and then redirects
+# ACME challenge requests are correctly forwarded to lego and then redirects
 # everything else to HTTPS.
 COPY nginx_conf.d/ /etc/nginx/conf.d/
 
@@ -116,6 +68,6 @@ VOLUME /etc/letsencrypt
 # port 443 here.
 EXPOSE 443
 
-# Change the container's start command to launch our Nginx and certbot
+# Change the container's start command to launch our Nginx and lego
 # management script.
-CMD [ "/scripts/start_nginx_certbot.sh" ]
+CMD [ "/scripts/start_nginx_lego.sh" ]

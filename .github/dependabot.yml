@@ -1,21 +1,12 @@
 version: 2
 updates:
-# Maintain dependencies for Dockerfiles.
-  - package-ecosystem: "docker"
-    directory: "/src"
-    schedule:
-      interval: "daily"
-      time: "04:00"
-    open-pull-requests-limit: 10
-# Maintain dependencies for pip packages.
-  - package-ecosystem: "pip"
-    directory: "/src"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 10
-# Maintain dependencies for GitHub Actions.
+# Maintain GitHub Actions version pins.
+# Docker base image (nginx) is tracked by check_nginx_update.yml instead,
+# which gives more control over mainline vs. stable selection.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
     open-pull-requests-limit: 10

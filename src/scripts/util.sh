@@ -86,7 +86,7 @@ is_ipv6() {
 # Find lines that contain 'ssl_certificate_key', and try to extract a name from
 # each of these file paths. Each keyfile must be stored at the default location
 # of /etc/letsencrypt/live/<cert_name>/privkey.pem, otherwise we ignore it since
-# it is most likely not a certificate that is managed by certbot.
+# it is most likely not a certificate that is managed by lego.
 #
 # $1: Path to a Nginx configuration file.
 parse_cert_names() {
@@ -103,20 +103,21 @@ parse_cert_names() {
 #   file inside the conf.d/ folder and attach them to the request. If there are
 #   different primary domains in the same .conf file it will cause some weird
 #   certificates. Should however work fine but is not best practice.
-# * If the following comment "# certbot_domain:<replacement_domain>" is present
+# * If the following comment "# lego_domain:<replacement_domain>" is present at
 #   the end of the line it will be printed twice in such a fashion that it
 #   encapsulate the server names that should be replaced with this one instead,
 #   like this:
-#       1. certbot_domain:*.example.com
-#       2. certbot_domain:www.example.com
-#       3. certbot_domain:sub.example.com
-#       4. certbot_domain:*.example.com
+#       1. lego_domain:*.example.com
+#       2. lego_domain:www.example.com
+#       3. lego_domain:sub.example.com
+#       4. lego_domain:*.example.com
+#   The legacy "certbot_domain:" prefix is also accepted for backward compatibility.
 # * Unlike the other similar functions this one will not perform "uniq" on the
 #   names, since that would prevent the feature explained above.
 #
 # $1: Path to a Nginx configuration file.
 parse_server_names() {
-    sed -n -r -e 's&^\s*server_name\s+([^;]*);\s*#?(\s*certbot_domain:[^[:space:]]+)?.*$&\2 \1 \2&p' "$1" | xargs -n1 echo
+    sed -n -r -e 's&^\s*server_name\s+([^;]*);\s*#?(\s*(lego_domain|certbot_domain):[^[:space:]]+)?.*$&\2 \1 \2&p' "$1" | xargs -n1 echo
 }
 
 # Return all unique "ssl_certificate_key" file paths.
@@ -211,13 +212,15 @@ parse_config_file() {
     for server_name in $(parse_server_names "${conf_file}"); do
         # Check if the current server_name line has a comment that tells us to
         # use a different domain name instead when making the request.
-        if [[ "${server_name}" =~ certbot_domain:(.*) ]]; then
-            if [ "${server_name}" == "certbot_domain:${replacement_domain}" ]; then
+        # Both "lego_domain:" and "certbot_domain:" (legacy) are supported.
+        if [[ "${server_name}" =~ (lego_domain|certbot_domain):(.*) ]]; then
+            local _domain_prefix="${BASH_REMATCH[1]}"
+            if [ "${server_name}" == "${_domain_prefix}:${replacement_domain}" ]; then
                 # We found the end of the special server names.
                 replacement_domain=""
                 continue
             fi
-            replacement_domain="${BASH_REMATCH[1]}"
+            replacement_domain="${BASH_REMATCH[2]}"
             server_names+=("${replacement_domain}")
             continue
         fi
@@ -228,7 +231,7 @@ parse_config_file() {
         fi
 
         # Ignore regex names, since these are not gracefully handled by this
-        # code or certbot.
+        # code or lego.
         if [[ "${server_name}" =~ ~(.*) ]]; then
             debug "Ignoring server name '${server_name}' since it looks like a regex and we cannot handle that"
             continue
@@ -256,7 +259,7 @@ parse_config_file() {
         # Make sure we only add unique entries every time.
         # This invocation of awk works like 'sort -u', but preserves order. This
         # set the first 'server_name' entry as the first '-d' domain artgument
-        # for the certbot command. This domain will be your Common Name on the
+        # for the lego command. This domain will be your Common Name on the
         # certificate.
         # stackoverflow on this awk usage: https://stackoverflow.com/a/45808487
         certs["${cert_name}"]="$(echo "${certs["${cert_name}"]}" "${server_names[@]}" | xargs -n1 echo | awk '!a[$0]++' | tr '\n' ' ')"

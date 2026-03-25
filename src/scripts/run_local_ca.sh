@@ -17,7 +17,7 @@ LOCAL_CA_CRT_DIR="${LOCAL_CA_DIR}/new_certs"
 info "Starting certificate renewal process with local CA"
 
 # We require an email to be set here as well, in order to simulate how it would
-# be in the real certbot case.
+# be in the real lego case.
 if [ -z "${CERTBOT_EMAIL}" ]; then
     error "CERTBOT_EMAIL environment variable undefined; local CA will do nothing!"
     exit 1
@@ -134,7 +134,7 @@ generate_ca() {
                               "[ dn_section ]" \
                               "countryName             = SE" \
                               "0.organizationName      = github.com/JonasAlfredsson" \
-                              "organizationalUnitName  = docker-nginx-certbot" \
+                              "organizationalUnitName  = docker-nginx-lego" \
                               "commonName              = Local Debug CA" \
                               "emailAddress            = ${CERTBOT_EMAIL}" \
                               ) \
@@ -203,7 +203,7 @@ get_certificate() {
                -in "${LOCAL_CA_DIR}/${cert_name}.csr" \
                -out "/etc/letsencrypt/live/${cert_name}/cert.pem"
 
-    # Create the other two files necessary to match what certbot produces.
+    # Create the other two files necessary to match what lego produces.
     cp "${LOCAL_CA_CRT}" "/etc/letsencrypt/live/${cert_name}/chain.pem"
     cat "/etc/letsencrypt/live/${cert_name}/cert.pem" > "/etc/letsencrypt/live/${cert_name}/fullchain.pem"
     cat "/etc/letsencrypt/live/${cert_name}/chain.pem" >> "/etc/letsencrypt/live/${cert_name}/fullchain.pem"
