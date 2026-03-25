@@ -12,11 +12,25 @@ on:
     branches:
       - "main"
       - "master"
-    paths:
-      - "src/Dockerfile*"
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: dorny/paths-filter@v3.0.2
+        id: filter
+        with:
+          filters: |
+            dockerfiles:
+              - "src/Dockerfile*"
+
   docker_buildx_debian:
+    needs: changes
+    if: needs.changes.outputs.dockerfiles == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -64,6 +78,8 @@ jobs:
           readme-filepath: ./docs/dockerhub_description.md
 
   docker_buildx_alpine:
+    needs: changes
+    if: needs.changes.outputs.dockerfiles == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

@@ -29,7 +29,7 @@ lego<X.Y.Z>-nginx<X.Y.Z>-alpine   # Alpine
 ```
 
 Use a specific tag in production. See the
-[full tag list](https://github.com/emulatorchen/docker-nginx-certbot/blob/master/docs/dockerhub_tags.md).
+[full tag list](https://github.com/emulatorchen/docker-nginx-lego/blob/master/docs/dockerhub_tags.md).
 
 ## Certificate naming
 
@@ -47,7 +47,7 @@ ssl_certificate_key /etc/letsencrypt/live/example.com.dns-route53/privkey.pem;
 ```
 
 150+ DNS providers supported. See the
-[provider list](https://github.com/emulatorchen/docker-nginx-certbot/blob/master/docs/lego_providers.md).
+[provider list](https://github.com/emulatorchen/docker-nginx-lego/blob/master/docs/lego_providers.md).
 
 ## Key environment variables
 
@@ -78,7 +78,7 @@ ssl_certificate_key /etc/letsencrypt/live/example.com.dns-route53/privkey.pem;
 
 ## Links
 
-- [GitHub repository & docs](https://github.com/emulatorchen/docker-nginx-certbot)
-- [Advanced usage](https://github.com/emulatorchen/docker-nginx-certbot/blob/master/docs/advanced_usage.md)
-- [Good to know](https://github.com/emulatorchen/docker-nginx-certbot/blob/master/docs/good_to_know.md)
+- [GitHub repository & docs](https://github.com/emulatorchen/docker-nginx-lego)
+- [Advanced usage](https://github.com/emulatorchen/docker-nginx-lego/blob/master/docs/advanced_usage.md)
+- [Good to know](https://github.com/emulatorchen/docker-nginx-lego/blob/master/docs/good_to_know.md)
 - [Upstream project](https://github.com/JonasAlfredsson/docker-nginx-certbot)

@@ -1,0 +1,3 @@
+# Workflow changes require owner review to prevent check bypass
+.github/workflows/ @emulatorchen
+.github/CODEOWNERS @emulatorchen
