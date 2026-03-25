@@ -44,7 +44,7 @@ please [donate][3].
 This repository is a fork of [`JonasAlfredsson/docker-nginx-certbot`][upstream],
 which itself was originally forked from [`@staticfloat`][5] and
 [`@henridwyer`][4]. The certbot-to-lego migration was [encouraged by the
-upstream author][pr373].
+upstream author][pr373] — thanks for the excellent foundation.
 
 
 
