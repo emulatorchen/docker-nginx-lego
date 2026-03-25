@@ -55,7 +55,7 @@ jobs:
         run: |
           docker run -d \
             --name nginx-lego-test \
-            -e CERTBOT_EMAIL=ci-test@example.com \
+            -e CERTBOT_EMAIL=${{ secrets.CERTBOT_EMAIL }} \
             -e STAGING=1 \
             -e RENEWAL_INTERVAL=9999d \
             -e CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials \
