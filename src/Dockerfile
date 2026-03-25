@@ -29,8 +29,14 @@ RUN set -ex && \
     else \
         ARCH=$(echo "${TARGETARCH:-$(uname -m)}" | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/armv7l/armv7/;s/armv6l/armv6/'); \
     fi && \
-    curl -sL "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/lego_v${LEGO_VERSION}_linux_${ARCH}.tar.gz" \
-        | tar -xz -C /usr/local/bin lego && \
+    TARBALL="lego_v${LEGO_VERSION}_linux_${ARCH}.tar.gz" && \
+    curl -sL "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/${TARBALL}" \
+        -o "/tmp/${TARBALL}" && \
+    CHECKSUM=$(curl -sL "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/lego_${LEGO_VERSION}_checksums.txt" \
+        | grep " ${TARBALL}$" | awk '{print $1}') && \
+    echo "${CHECKSUM}  /tmp/${TARBALL}" | sha256sum -c - && \
+    tar -xz -C /usr/local/bin lego -f "/tmp/${TARBALL}" && \
+    rm "/tmp/${TARBALL}" && \
     chmod +x /usr/local/bin/lego && \
 # Remove curl — no longer needed at runtime.
     apt-get remove --purge -y curl && \

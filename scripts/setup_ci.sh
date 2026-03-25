@@ -11,21 +11,21 @@
 #   ./scripts/setup_ci.sh --apply      # execute all changes
 #
 # Prerequisites:
-#   - gh CLI (https://cli.github.com), authenticated: gh auth login
+#   - gh CLI (https://cli.github.com), authenticated via GH_TOKEN env var or gh auth login
 #   - curl, jq
 #
 # To adapt for another project, edit the CONFIG section below.
 # Everything below the CONFIG section is generic and should not need changes.
 #
-# Secrets and tokens are never passed as arguments. The script prompts
-# interactively or reads from environment variables:
+# Secrets and tokens are never passed as arguments. The script reads from
+# environment variables or prompts interactively:
 #
 #   DOCKERHUB_PASSWORD   Docker Hub password (for login + repo creation)
 #   DOCKERHUB_TOKEN      Docker Hub access token (stored as GitHub secret)
 #   FREEMYIP_TOKEN       FreeMyIP token (stored as GitHub secret)
 #
 # Any variable not set in the environment will be prompted for interactively.
-# Set a variable to "" (empty string) to skip storing that secret/variable.
+# Press Enter to skip storing that secret.
 
 set -euo pipefail
 
@@ -41,20 +41,14 @@ DOCKERHUB_REPO="docker-nginx-lego"
 DOCKERHUB_REPO_DESCRIPTION="Nginx + automated SSL via Let's Encrypt and lego"
 DOCKERHUB_REPO_PRIVATE=false
 
-# GitHub secrets to set (name → env var to read value from).
-# Set the value to "" to skip that secret.
-declare -A GITHUB_SECRETS=(
-    [DOCKERHUB_USERNAME]="DOCKERHUB_USERNAME"   # reuse the config value above
-    [DOCKERHUB_TOKEN]="DOCKERHUB_TOKEN"
-    [FREEMYIP_TOKEN]="FREEMYIP_TOKEN"
-)
+# GitHub secrets: parallel arrays of secret_name and env_var_to_read_from.
+# DOCKERHUB_USERNAME is handled separately (value comes from config above).
+SECRET_NAMES=( "DOCKERHUB_TOKEN"  "FREEMYIP_TOKEN" )
+SECRET_ENVS=(  "DOCKERHUB_TOKEN"  "FREEMYIP_TOKEN" )
 
-# GitHub repository variables to set (name → value).
-# Set the value to "" to skip that variable.
-declare -A GITHUB_VARS=(
-    [FREEMYIP_DOMAIN]="this.freemyip.com"
-    [FREEMYIP_CERT_NAME]="this-freemyip.dns-freemyip"
-)
+# GitHub repository variables: parallel arrays of var_name and value.
+VAR_NAMES=(  "FREEMYIP_DOMAIN"       "FREEMYIP_CERT_NAME"           )
+VAR_VALUES=( "this.freemyip.com"     "this-freemyip.dns-freemyip"   )
 
 # ─── END CONFIG ───────────────────────────────────────────────────────────────
 
@@ -96,25 +90,25 @@ prompt_secret() {
 }
 
 check_prereqs() {
-    local ok=true
+    local all_ok=true
     for cmd in gh curl jq; do
         if ! command -v "$cmd" &>/dev/null; then
             err "Missing prerequisite: $cmd"
-            ok=false
+            all_ok=false
         fi
     done
     if ! gh auth status &>/dev/null; then
-        err "gh CLI not authenticated. Run: gh auth login"
-        ok=false
+        err "gh CLI not authenticated. Set GH_TOKEN env var or run: gh auth login"
+        all_ok=false
     fi
-    $ok || exit 1
+    $all_ok || exit 1
 }
 
 # ─── Docker Hub ───────────────────────────────────────────────────────────────
 
 dockerhub_login() {
     prompt_secret DOCKERHUB_PASSWORD "Docker Hub password for '${DOCKERHUB_USERNAME}'"
-    [[ -z "$DOCKERHUB_PASSWORD" ]] && { info "Skipping Docker Hub login (no password)"; return 1; }
+    [[ -z "${DOCKERHUB_PASSWORD:-}" ]] && { info "Skipping Docker Hub login (no password)"; return 1; }
 
     DOCKERHUB_AUTH_TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \
         -H "Content-Type: application/json" \
@@ -132,7 +126,6 @@ dockerhub_login() {
 setup_dockerhub_repo() {
     info "--- Docker Hub ---"
 
-    # Check if repo already exists
     local status
     status=$(curl -s -o /dev/null -w "%{http_code}" \
         "https://hub.docker.com/v2/repositories/${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO}/")
@@ -142,19 +135,22 @@ setup_dockerhub_repo() {
         return
     fi
 
-    apply "Create Docker Hub repo: ${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO} (private=${DOCKERHUB_REPO_PRIVATE})" \
-        bash -c "
-            dockerhub_login || exit 1
-            curl -sf -X POST 'https://hub.docker.com/v2/repositories/' \
-                -H 'Authorization: Bearer ${DOCKERHUB_AUTH_TOKEN}' \
-                -H 'Content-Type: application/json' \
-                -d '{
-                    \"name\": \"${DOCKERHUB_REPO}\",
-                    \"namespace\": \"${DOCKERHUB_USERNAME}\",
-                    \"description\": \"${DOCKERHUB_REPO_DESCRIPTION}\",
-                    \"is_private\": ${DOCKERHUB_REPO_PRIVATE}
-                }' | jq -r '.name' && echo '[ok] Docker Hub repo created'
-        "
+    if $APPLY; then
+        info "Applying: Create Docker Hub repo: ${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO}"
+        dockerhub_login || return 1
+        curl -sf -X POST "https://hub.docker.com/v2/repositories/" \
+            -H "Authorization: Bearer ${DOCKERHUB_AUTH_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"name\": \"${DOCKERHUB_REPO}\",
+                \"namespace\": \"${DOCKERHUB_USERNAME}\",
+                \"description\": \"${DOCKERHUB_REPO_DESCRIPTION}\",
+                \"is_private\": ${DOCKERHUB_REPO_PRIVATE}
+            }" | jq -r '.name'
+        ok "Docker Hub repo created"
+    else
+        plan "Create Docker Hub repo: ${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO} (private=${DOCKERHUB_REPO_PRIVATE})"
+    fi
 }
 
 # ─── GitHub ───────────────────────────────────────────────────────────────────
@@ -177,25 +173,24 @@ setup_github_actions() {
 setup_github_secrets() {
     info "--- GitHub secrets ---"
 
-    # DOCKERHUB_USERNAME is a config value, not prompted
-    if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
-        apply "Set GitHub secret: DOCKERHUB_USERNAME" \
-            gh secret set DOCKERHUB_USERNAME \
-                --repo "${GITHUB_REPO}" \
-                --body "${DOCKERHUB_USERNAME}"
-    fi
+    # DOCKERHUB_USERNAME comes from config, not env
+    apply "Set GitHub secret: DOCKERHUB_USERNAME" \
+        gh secret set DOCKERHUB_USERNAME \
+            --repo "${GITHUB_REPO}" \
+            --body "${DOCKERHUB_USERNAME}"
 
-    for secret_name in "${!GITHUB_SECRETS[@]}"; do
-        [[ "$secret_name" == "DOCKERHUB_USERNAME" ]] && continue  # handled above
-        local env_var="${GITHUB_SECRETS[$secret_name]}"
-        prompt_secret "$env_var" "${secret_name}"
-        local value="${!env_var:-}"
+    local i name env_var value
+    for i in "${!SECRET_NAMES[@]}"; do
+        name="${SECRET_NAMES[$i]}"
+        env_var="${SECRET_ENVS[$i]}"
+        prompt_secret "$env_var" "${name}"
+        value="${!env_var:-}"
         if [[ -z "$value" ]]; then
-            info "Skipping secret: ${secret_name} (no value)"
+            info "Skipping secret: ${name} (no value)"
             continue
         fi
-        apply "Set GitHub secret: ${secret_name}" \
-            gh secret set "${secret_name}" \
+        apply "Set GitHub secret: ${name}" \
+            gh secret set "${name}" \
                 --repo "${GITHUB_REPO}" \
                 --body "${value}"
     done
@@ -204,22 +199,22 @@ setup_github_secrets() {
 setup_github_vars() {
     info "--- GitHub repository variables ---"
 
-    for var_name in "${!GITHUB_VARS[@]}"; do
-        local value="${GITHUB_VARS[$var_name]}"
+    local i name value existing
+    for i in "${!VAR_NAMES[@]}"; do
+        name="${VAR_NAMES[$i]}"
+        value="${VAR_VALUES[$i]}"
         if [[ -z "$value" ]]; then
-            info "Skipping variable: ${var_name} (no value configured)"
+            info "Skipping variable: ${name} (no value configured)"
             continue
         fi
-        # Check if variable already exists
-        local existing
-        existing=$(gh api "repos/${GITHUB_REPO}/actions/variables/${var_name}" \
+        existing=$(gh api "repos/${GITHUB_REPO}/actions/variables/${name}" \
             --jq '.value' 2>/dev/null || echo "")
         if [[ "$existing" == "$value" ]]; then
-            ok "GitHub variable ${var_name} already set to '${value}'"
+            ok "GitHub variable ${name} already set to '${value}'"
             continue
         fi
-        apply "Set GitHub variable: ${var_name}=${value}" \
-            gh variable set "${var_name}" \
+        apply "Set GitHub variable: ${name}=${value}" \
+            gh variable set "${name}" \
                 --repo "${GITHUB_REPO}" \
                 --body "${value}"
     done

@@ -1,0 +1,143 @@
+name: "check-upstream-update"
+
+# Checks whether JonasAlfredsson/docker-nginx-certbot has released a new tag
+# since the last recorded sync in .upstream-sync-ref, and opens a tracking
+# issue if so. This is intentionally an issue (not a PR) because syncing
+# requires manual review — see docs/UPSTREAM_SYNC.md for the process.
+#
+# To mark a sync as complete: update .upstream-sync-ref to the new tag and
+# close the issue.
+
+on:
+  schedule:
+    # Run every Monday at 10:00 UTC (after lego and nginx checkers)
+    - cron: "0 10 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check_upstream:
+    name: "Check for upstream releases"
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Get last synced upstream ref
+        id: synced
+        run: |
+          REF=$(cat .upstream-sync-ref | tr -d '[:space:]')
+          echo "ref=${REF}" >> $GITHUB_OUTPUT
+          echo "Last synced upstream ref: ${REF}"
+
+      - name: Get upstream latest release
+        id: upstream
+        run: |
+          RESPONSE=$(curl -s "https://api.github.com/repos/JonasAlfredsson/docker-nginx-certbot/releases/latest")
+          TAG=$(echo "$RESPONSE" | jq -r '.tag_name')
+          DATE=$(echo "$RESPONSE" | jq -r '.published_at | split("T")[0]')
+          URL=$(echo "$RESPONSE" | jq -r '.html_url')
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "date=${DATE}" >> $GITHUB_OUTPUT
+          echo "url=${URL}" >> $GITHUB_OUTPUT
+          echo "Latest upstream release: ${TAG} (${DATE})"
+
+      - name: Compare refs
+        id: compare
+        run: |
+          SYNCED="${{ steps.synced.outputs.ref }}"
+          LATEST="${{ steps.upstream.outputs.tag }}"
+          if [ "$SYNCED" = "$LATEST" ]; then
+            echo "up_to_date=true" >> $GITHUB_OUTPUT
+            echo "Already in sync with upstream (${SYNCED})"
+          else
+            echo "up_to_date=false" >> $GITHUB_OUTPUT
+            echo "Upstream has moved: ${SYNCED} → ${LATEST}"
+          fi
+
+      - name: Check for existing open issue
+        if: steps.compare.outputs.up_to_date == 'false'
+        id: existing
+        run: |
+          TITLE="Upstream sync: ${{ steps.upstream.outputs.tag }} available"
+          EXISTS=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --label "upstream-sync" \
+            --state open \
+            --json title \
+            --jq ".[] | select(.title == \"${TITLE}\") | .title" \
+            | head -1)
+          if [ -n "$EXISTS" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Issue already open for ${{ steps.upstream.outputs.tag }}, skipping"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create upstream-sync label if missing
+        if: steps.compare.outputs.up_to_date == 'false' && steps.existing.outputs.exists == 'false'
+        run: |
+          gh label create "upstream-sync" \
+            --repo "$GITHUB_REPOSITORY" \
+            --description "Upstream JonasAlfredsson/docker-nginx-certbot has new releases to review" \
+            --color "0075ca" \
+            2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Open tracking issue
+        if: steps.compare.outputs.up_to_date == 'false' && steps.existing.outputs.exists == 'false'
+        run: |
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --label "upstream-sync" \
+            --title "Upstream sync: ${{ steps.upstream.outputs.tag }} available" \
+            --body "$(cat <<'BODY'
+          ## Upstream has a new release
+
+          | | |
+          |---|---|
+          | **Upstream repo** | [JonasAlfredsson/docker-nginx-certbot](https://github.com/JonasAlfredsson/docker-nginx-certbot) |
+          | **New tag** | [${{ steps.upstream.outputs.tag }}](${{ steps.upstream.outputs.url }}) |
+          | **Released** | ${{ steps.upstream.outputs.date }} |
+          | **Last synced** | `${{ steps.synced.outputs.ref }}` |
+
+          ## What to review
+
+          Use `docs/UPSTREAM_SYNC.md` for the full sync process. Quick reference:
+
+          **Pull freely** (safe to `git checkout upstream/master -- <file>`):
+          - `src/nginx_conf.d/redirector.conf`
+          - `src/scripts/create_dhparams.sh`
+          - `src/scripts/run_local_ca.sh`
+
+          **Manual merge required** (apply nginx-layer changes only, skip certbot sections):
+          - `src/Dockerfile` / `src/Dockerfile-alpine` — nginx version bump, COPY/RUN/VOLUME/EXPOSE lines
+          - `src/scripts/start_nginx_lego.sh` — signal handling, sleep loop, wait loop
+          - `src/scripts/util.sh` — parser improvements; do not overwrite `lego_domain:`/`certbot_domain:` additions
+
+          **Never pull:**
+          - `src/scripts/run_certbot.sh` (deleted)
+          - `src/requirements.txt` (deleted)
+          - Any Python/pip/Rust changes
+
+          ## How to close this issue
+
+          Once the sync is complete, update `.upstream-sync-ref` to `${{ steps.upstream.outputs.tag }}` and close this issue:
+
+          ```bash
+          echo "${{ steps.upstream.outputs.tag }}" > .upstream-sync-ref
+          git add .upstream-sync-ref
+          git commit -m "sync: record upstream ${{ steps.upstream.outputs.tag }}"
+          ```
+
+          ---
+          *Opened automatically by the `check-upstream-update` workflow.*
+          BODY
+          )"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
