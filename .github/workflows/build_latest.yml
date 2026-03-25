@@ -92,3 +92,33 @@ jobs:
             linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: emulator/docker-nginx-lego:latest-alpine
+
+  docker_buildx_ubuntu:
+    needs: changes
+    if: needs.changes.outputs.dockerfiles == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Run Docker on tmpfs
+        uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
+        with:
+          tmpfs_size: 7
+          swap_size: 9
+
+      - name: Perform setup steps
+        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
+        with:
+          should_login: ${{ github.event_name != 'pull_request' }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push latest Ubuntu image
+        uses: docker/build-push-action@v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile-ubuntu
+          platforms: |
+            linux/amd64
+            linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: emulator/docker-nginx-lego:latest-ubuntu

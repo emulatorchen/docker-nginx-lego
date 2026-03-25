@@ -237,8 +237,54 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.value }}
 
+  docker_buildx_ubuntu:
+    needs: [resolve_tag, integration_check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Run Docker on tmpfs
+        uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
+        with:
+          tmpfs_size: 7
+          swap_size: 9
+
+      - name: Perform setup steps
+        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
+        with:
+          should_login: true
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute Ubuntu tags
+        id: tags
+        run: |
+          BASE="emulator/docker-nginx-lego"
+          L="${{ needs.resolve_tag.outputs.lego }}"
+          N="${{ needs.resolve_tag.outputs.nginx }}"
+          R="${{ needs.resolve_tag.outputs.revision }}"
+          {
+            echo 'value<<EOF'
+            [ -n "$R" ] && echo "${BASE}:lego${L}-nginx${N}-r${R}-ubuntu"
+            echo "${BASE}:lego${L}-nginx${N}-ubuntu"
+            echo "${BASE}:lego${L}-ubuntu"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+      - name: Build and push all Ubuntu images
+        uses: docker/build-push-action@v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile-ubuntu
+          platforms: |
+            linux/amd64
+            linux/arm64
+          pull: true
+          no-cache: true
+          push: true
+          tags: ${{ steps.tags.outputs.value }}
+
   github_release:
-    needs: [resolve_tag, docker_buildx_debian, docker_buildx_alpine]
+    needs: [resolve_tag, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

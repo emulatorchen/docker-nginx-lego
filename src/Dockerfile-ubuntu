@@ -1,0 +1,82 @@
+FROM ubuntu:24.04
+LABEL maintainer="emulatorchen"
+
+# FORK: Uses Ubuntu 24.04 (Noble) as the base instead of the official nginx Docker
+# image, providing Ubuntu's OpenSSL 3.x and system libraries while installing nginx
+# mainline from the official nginx.org repository.
+#
+# When merging nginx version bumps: update ARG NGINX_VERSION below (check_nginx_update
+# workflow handles this automatically).
+# When merging lego version bumps: update ARG LEGO_VERSION below.
+# Skip all certbot/Python changes from upstream — they are intentionally removed.
+
+ARG NGINX_VERSION=1.29.5
+ARG LEGO_VERSION=4.33.0
+ARG TARGETARCH
+ARG TARGETVARIANT
+
+RUN set -ex && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        gnupg \
+        ca-certificates \
+    && \
+# Add official nginx.org mainline repository for Ubuntu Noble.
+    curl -fsSL https://nginx.org/keys/nginx_signing.key \
+        | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/mainline/ubuntu noble nginx" \
+        > /etc/apt/sources.list.d/nginx.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        nginx=${NGINX_VERSION}-1~noble \
+        openssl \
+        procps \
+    && \
+# Mirror the official nginx Docker image: redirect access and error logs to stdout/stderr.
+    ln -sf /dev/stdout /var/log/nginx/access.log && \
+    ln -sf /dev/stderr /var/log/nginx/error.log && \
+# Install the static lego binary for certificate management.
+    if [ "${TARGETARCH}" = "arm" ] && [ -n "${TARGETVARIANT}" ]; then \
+        ARCH="arm${TARGETVARIANT}"; \
+    else \
+        ARCH=$(echo "${TARGETARCH:-$(uname -m)}" | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/armv7l/armv7/;s/armv6l/armv6/'); \
+    fi && \
+    TARBALL="lego_v${LEGO_VERSION}_linux_${ARCH}.tar.gz" && \
+    curl -sL "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/${TARBALL}" \
+        -o "/tmp/${TARBALL}" && \
+    CHECKSUM=$(curl -sL "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/lego_${LEGO_VERSION}_checksums.txt" \
+        | grep " ${TARBALL}$" | awk '{print $1}') && \
+    echo "${CHECKSUM}  /tmp/${TARBALL}" | sha256sum -c - && \
+    tar -xz -C /usr/local/bin lego -f "/tmp/${TARBALL}" && \
+    rm "/tmp/${TARBALL}" && \
+    chmod +x /usr/local/bin/lego && \
+# Remove build-only packages.
+    apt-get remove --purge -y curl gnupg && \
+    apt-get autoremove -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+# Create new directories and set correct permissions.
+    mkdir -p /var/www/letsencrypt && \
+    mkdir -p /etc/nginx/user_conf.d && \
+    chown www-data:www-data -R /var/www && \
+# Make sure there are no surprise config files inside the config folder.
+    rm -f /etc/nginx/conf.d/*
+
+# Copy in our "default" Nginx server configurations, which make sure that the
+# ACME challenge requests are correctly forwarded to lego and then redirects
+# everything else to HTTPS.
+COPY nginx_conf.d/ /etc/nginx/conf.d/
+
+# Copy in all our scripts and make them executable.
+COPY scripts/ /scripts
+RUN chmod +x -R /scripts
+
+# Create a volume to have persistent storage for the obtained certificates.
+VOLUME /etc/letsencrypt
+
+# Expose both ports: 80 for ACME HTTP-01 challenges, 443 for HTTPS.
+EXPOSE 80 443
+
+# Launch our Nginx and lego management script.
+CMD ["/scripts/start_nginx_lego.sh"]
