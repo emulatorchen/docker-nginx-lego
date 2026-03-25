@@ -11,12 +11,8 @@ if [ "${LEGO_FUNCTIONS_ONLY}" != "1" ]; then
     . "$(cd "$(dirname "$0")"; pwd)/util.sh"
 fi
 
-# ---------------------------------------------------------------------------
-# FUNCTION DEFINITIONS
-# All functions are defined before the main execution block so they can be
-# sourced and tested independently:
+# Functions are defined before the main block so they can be sourced for testing:
 #   LEGO_FUNCTIONS_ONLY=1 . run_lego.sh
-# ---------------------------------------------------------------------------
 
 # Map certbot key-type names to lego --key-type values.
 # Honors RSA_KEY_SIZE (2048/4096/8192) and ELLIPTIC_CURVE (secp256r1/secp384r1).
@@ -44,17 +40,8 @@ map_key_type() {
 }
 
 # determine_authenticator <cert_name>
-#
-# Returns the authenticator string for the given cert name:
-#   "webroot"          — use HTTP-01 via lego --http --http.webroot
-#   "dns-<provider>"   — use DNS-01 via lego --dns <provider>
-#
-# Priority order:
-#   1. Explicit .webroot in cert name
-#   2. Explicit .dns-<provider> in cert name
-#   3. LEGO_DEFAULT_PROVIDER env var
-#   4. CERTBOT_AUTHENTICATOR env var (backward compat)
-#   5. Default: webroot
+# Returns "webroot" or "dns-<provider>" based on the cert name suffix,
+# LEGO_DEFAULT_PROVIDER, CERTBOT_AUTHENTICATOR (backward compat), or webroot default.
 determine_authenticator() {
     local cert_name="${1}"
 
