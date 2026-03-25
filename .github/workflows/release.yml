@@ -3,10 +3,6 @@ name: "release"
 on:
   workflow_dispatch:
     inputs:
-      revision:
-        description: "Patch revision (e.g. 1 → tag gets -r1 suffix). Leave blank for a base release."
-        required: false
-        default: ""
       notes:
         description: "Release notes. Leave blank to auto-generate from merged PRs. Provide text to prepend before auto-generated notes, or check 'override' to use only what you write here."
         required: false
@@ -26,18 +22,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4.2.2
 
-      - name: Extract versions
+      - name: Resolve tag
         id: versions
         run: |
           lego=$(grep -m1 '^ARG LEGO_VERSION=' src/Dockerfile | cut -d= -f2)
           nginx=$(grep -m1 '^FROM nginx:' src/Dockerfile | sed 's/FROM nginx://')
-          revision="${{ inputs.revision }}"
-          suffix=""
-          [ -n "$revision" ] && suffix="-r${revision}"
-          tag="lego${lego}-nginx${nginx}${suffix}"
+          base="lego${lego}-nginx${nginx}"
+
+          # Auto-increment revision if base tag already exists
+          if git ls-remote --tags origin | grep -q "refs/tags/${base}$"; then
+            rev=1
+            while git ls-remote --tags origin | grep -q "refs/tags/${base}-r${rev}$"; do
+              rev=$((rev + 1))
+            done
+            tag="${base}-r${rev}"
+          else
+            tag="$base"
+          fi
+
           echo "lego=$lego"   >> $GITHUB_OUTPUT
           echo "nginx=$nginx" >> $GITHUB_OUTPUT
           echo "tag=$tag"     >> $GITHUB_OUTPUT
+          echo "Resolved tag: $tag"
 
       - name: Create and push tag
         run: |
