@@ -17,14 +17,28 @@ on:
     branches:
       - "main"
       - "master"
-    paths:
-      - "src/**"
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      src: ${{ steps.filter.outputs.src }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: dorny/paths-filter@v3.0.2
+        id: filter
+        with:
+          filters: |
+            src:
+              - "src/**"
+
   integration_freemyip:
+    needs: changes
+    if: needs.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
     name: "DNS-01 via FreeMyIP (staging)"
     runs-on: ubuntu-latest
     timeout-minutes: 30
