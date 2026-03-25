@@ -16,20 +16,24 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  resolve_tag:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      lego: ${{ steps.resolve.outputs.lego }}
+      nginx: ${{ steps.resolve.outputs.nginx }}
+      revision: ${{ steps.resolve.outputs.revision }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4.2.2
 
       - name: Resolve tag
-        id: versions
+        id: resolve
         run: |
           lego=$(grep -m1 '^ARG LEGO_VERSION=' src/Dockerfile | cut -d= -f2)
           nginx=$(grep -m1 '^FROM nginx:' src/Dockerfile | sed 's/FROM nginx://')
           base="lego${lego}-nginx${nginx}"
 
-          # Auto-increment revision if base tag already exists
           if git ls-remote --tags origin | grep -q "refs/tags/${base}$"; then
             rev=1
             while git ls-remote --tags origin | grep -q "refs/tags/${base}-r${rev}$"; do
@@ -38,29 +42,213 @@ jobs:
             tag="${base}-r${rev}"
           else
             tag="$base"
+            rev=""
           fi
 
-          echo "lego=$lego"   >> $GITHUB_OUTPUT
-          echo "nginx=$nginx" >> $GITHUB_OUTPUT
-          echo "tag=$tag"     >> $GITHUB_OUTPUT
+          echo "lego=$lego"       >> $GITHUB_OUTPUT
+          echo "nginx=$nginx"     >> $GITHUB_OUTPUT
+          echo "revision=$rev"    >> $GITHUB_OUTPUT
+          echo "tag=$tag"         >> $GITHUB_OUTPUT
           echo "Resolved tag: $tag"
 
       - name: Create and push tag
         run: |
-          tag="${{ steps.versions.outputs.tag }}"
-          if git ls-remote --tags origin | grep -q "refs/tags/${tag}$"; then
-            echo "ERROR: tag '${tag}' already exists."
-            echo "Use the 'revision' input (e.g. 1) to create '${tag}-r1' instead."
+          git tag "${{ steps.resolve.outputs.tag }}"
+          git push origin "${{ steps.resolve.outputs.tag }}"
+
+  integration_check:
+    name: "Integration test (DNS-01 staging cert)"
+    needs: resolve_tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.0.0
+
+      - name: Build Debian image (amd64)
+        uses: docker/build-push-action@v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: docker-nginx-lego:integration-test
+
+      - name: Create credentials directory
+        run: mkdir -p /tmp/lego-test-creds
+
+      - name: Write FreeMyIP credentials
+        run: |
+          cat > /tmp/lego-test-creds/freemyip.ini << 'EOF'
+          FREEMYIP_TOKEN=${{ secrets.FREEMYIP_TOKEN }}
+          EOF
+
+      - name: Write FreeMyIP nginx config
+        run: |
+          mkdir -p /tmp/lego-test-conf
+          cat > /tmp/lego-test-conf/freemyip.conf << EOF
+          server {
+              listen 443 ssl;
+              server_name ${{ vars.FREEMYIP_DOMAIN }};
+              ssl_certificate     /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/privkey.pem;
+              location / { return 200 "ok"; add_header Content-Type text/plain; }
+          }
+          EOF
+
+      - name: Run container and request staging cert
+        id: run_container
+        run: |
+          docker run -d \
+            --name nginx-lego-test \
+            -e CERTBOT_EMAIL=${{ secrets.CERTBOT_EMAIL }} \
+            -e STAGING=1 \
+            -e RENEWAL_INTERVAL=9999d \
+            -e CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials \
+            -v /tmp/lego-test-creds:/etc/letsencrypt/credentials:ro \
+            -v /tmp/lego-test-conf:/etc/nginx/user_conf.d:ro \
+            -v lego-test-certs:/etc/letsencrypt \
+            -p 8080:80 \
+            -p 8443:443 \
+            docker-nginx-lego:integration-test
+          for i in $(seq 1 18); do
+            sleep 5
+            if docker exec nginx-lego-test test -f /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem 2>/dev/null; then
+              echo "cert_obtained=true" >> $GITHUB_OUTPUT
+              break
+            fi
+            echo "Waiting for cert... attempt $i/18"
+          done
+
+      - name: Verify certificate obtained
+        run: |
+          if [ "${{ steps.run_container.outputs.cert_obtained }}" != "true" ]; then
+            echo "Certificate was not obtained within timeout"
+            docker logs nginx-lego-test
             exit 1
           fi
-          git tag "$tag"
-          git push origin "$tag"
+          echo "Certificate obtained successfully"
+
+      - name: Print container logs
+        if: always()
+        run: docker logs nginx-lego-test || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop nginx-lego-test || true
+          docker rm nginx-lego-test || true
+          docker volume rm lego-test-certs || true
+
+  docker_buildx_debian:
+    needs: [resolve_tag, integration_check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Run Docker on tmpfs
+        uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
+        with:
+          tmpfs_size: 7
+          swap_size: 9
+
+      - name: Perform setup steps
+        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
+        with:
+          should_login: true
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute Debian tags
+        id: tags
+        run: |
+          BASE="emulator/docker-nginx-lego"
+          L="${{ needs.resolve_tag.outputs.lego }}"
+          N="${{ needs.resolve_tag.outputs.nginx }}"
+          R="${{ needs.resolve_tag.outputs.revision }}"
+          {
+            echo 'value<<EOF'
+            [ -n "$R" ] && echo "${BASE}:lego${L}-nginx${N}-r${R}"
+            echo "${BASE}:lego${L}-nginx${N}"
+            echo "${BASE}:lego${L}"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+      - name: Build and push all Debian images
+        uses: docker/build-push-action@v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          platforms: |
+            linux/amd64
+            linux/386
+            linux/arm64
+            linux/arm/v7
+          pull: true
+          no-cache: true
+          push: true
+          tags: ${{ steps.tags.outputs.value }}
+
+  docker_buildx_alpine:
+    needs: [resolve_tag, integration_check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Run Docker on tmpfs
+        uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
+        with:
+          tmpfs_size: 7
+          swap_size: 9
+
+      - name: Perform setup steps
+        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
+        with:
+          should_login: true
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute Alpine tags
+        id: tags
+        run: |
+          BASE="emulator/docker-nginx-lego"
+          L="${{ needs.resolve_tag.outputs.lego }}"
+          N="${{ needs.resolve_tag.outputs.nginx }}"
+          R="${{ needs.resolve_tag.outputs.revision }}"
+          {
+            echo 'value<<EOF'
+            [ -n "$R" ] && echo "${BASE}:lego${L}-nginx${N}-r${R}-alpine"
+            echo "${BASE}:lego${L}-nginx${N}-alpine"
+            echo "${BASE}:lego${L}-alpine"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+      - name: Build and push all Alpine images
+        uses: docker/build-push-action@v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile-alpine
+          platforms: |
+            linux/amd64
+            linux/arm64
+          pull: true
+          no-cache: true
+          push: true
+          tags: ${{ steps.tags.outputs.value }}
+
+  github_release:
+    needs: [resolve_tag, docker_buildx_debian, docker_buildx_alpine]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
 
       - name: Create GitHub release (auto-generated notes)
         if: inputs.notes == '' && !inputs.override_notes
         run: |
-          gh release create "${{ steps.versions.outputs.tag }}" \
-              --title "${{ steps.versions.outputs.tag }}" \
+          gh release create "${{ needs.resolve_tag.outputs.tag }}" \
+              --title "${{ needs.resolve_tag.outputs.tag }}" \
               --generate-notes \
               --latest
         env:
@@ -69,10 +257,10 @@ jobs:
       - name: Create GitHub release (prepend custom notes)
         if: inputs.notes != '' && !inputs.override_notes
         run: |
-          prev_tag=$(git tag --sort=-creatordate | grep -v "^${{ steps.versions.outputs.tag }}$" | head -1)
+          prev_tag=$(git tag --sort=-creatordate | grep -v "^${{ needs.resolve_tag.outputs.tag }}$" | head -1)
           if [ -n "$prev_tag" ]; then
             generated=$(gh api repos/${{ github.repository }}/releases/generate-notes \
-              -f tag_name="${{ steps.versions.outputs.tag }}" \
+              -f tag_name="${{ needs.resolve_tag.outputs.tag }}" \
               -f previous_tag_name="$prev_tag" \
               --jq '.body')
           else
@@ -80,8 +268,8 @@ jobs:
           fi
           body="${{ inputs.notes }}"
           [ -n "$generated" ] && body="${body}"$'\n\n'"${generated}"
-          gh release create "${{ steps.versions.outputs.tag }}" \
-              --title "${{ steps.versions.outputs.tag }}" \
+          gh release create "${{ needs.resolve_tag.outputs.tag }}" \
+              --title "${{ needs.resolve_tag.outputs.tag }}" \
               --notes "$body" \
               --latest
         env:
@@ -90,17 +278,24 @@ jobs:
       - name: Create GitHub release (override notes)
         if: inputs.override_notes
         run: |
-          gh release create "${{ steps.versions.outputs.tag }}" \
-              --title "${{ steps.versions.outputs.tag }}" \
+          gh release create "${{ needs.resolve_tag.outputs.tag }}" \
+              --title "${{ needs.resolve_tag.outputs.tag }}" \
               --notes "${{ inputs.notes }}" \
               --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: emulator/docker-nginx-lego
+          readme-filepath: ./docs/dockerhub_description.md
+
       - name: Summary
         run: |
-          echo "### Released ${{ steps.versions.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Released ${{ needs.resolve_tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- [GitHub release](https://github.com/${{ github.repository }}/releases/tag/${{ steps.versions.outputs.tag }})" >> $GITHUB_STEP_SUMMARY
-          echo "- [Actions](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
-          echo "- Docker Hub: \`emulator/docker-nginx-lego:${{ steps.versions.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- [GitHub release](https://github.com/${{ github.repository }}/releases/tag/${{ needs.resolve_tag.outputs.tag }})" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker Hub: \`emulator/docker-nginx-lego:${{ needs.resolve_tag.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
