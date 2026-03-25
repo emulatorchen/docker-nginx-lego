@@ -7,6 +7,9 @@ on:
     tags:
       - "lego[0-9]*.[0-9]*.[0-9]*-nginx[1-9]*.[0-9]*.[0-9]*"
 
+permissions:
+  contents: read
+
 jobs:
   integration_check:
     name: "Integration test (DNS-01 staging cert)"
