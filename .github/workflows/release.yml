@@ -41,8 +41,14 @@ jobs:
 
       - name: Create and push tag
         run: |
-          git tag "${{ steps.versions.outputs.tag }}"
-          git push origin "${{ steps.versions.outputs.tag }}"
+          tag="${{ steps.versions.outputs.tag }}"
+          if git ls-remote --tags origin | grep -q "refs/tags/${tag}$"; then
+            echo "ERROR: tag '${tag}' already exists."
+            echo "Use the 'revision' input (e.g. 1) to create '${tag}-r1' instead."
+            exit 1
+          fi
+          git tag "$tag"
+          git push origin "$tag"
 
       - name: Create GitHub release (auto-generated notes)
         if: inputs.notes == '' && !inputs.override_notes
