@@ -1,15 +1,8 @@
 name: "integration-tests"
 
-# Uses pull_request_target so that PRs from forks run in the base repo context
-# and have access to the owner's secrets and domain variables. This means the
-# owner's staging cert is always tested against the actual PR code.
-#
-# Security note: enable "Require approval for all outside collaborators" in
-# Settings → Actions → General to hold fork PRs until manually reviewed.
-#
-# Domain and cert-name variables are read from repository variables (Settings →
-# Secrets and variables → Variables). They are NOT inherited by forks, so a fork
-# that sets its own token but forgets to set domain variables will fail fast.
+# Runs on pull_request so the PR code is tested directly.
+# Secrets are available for same-repo PRs; fork PRs skip gracefully when
+# FREEMYIP_TOKEN is not set.
 #
 # Required repository variables:
 #   FREEMYIP_DOMAIN    e.g. this.freemyip.com
@@ -20,7 +13,7 @@ name: "integration-tests"
 
 on:
   workflow_dispatch:
-  pull_request_target:
+  pull_request:
     branches:
       - "main"
       - "master"
@@ -53,8 +46,6 @@ jobs:
       - name: Checkout
         if: steps.check.outputs.skip != 'true'
         uses: actions/checkout@v6.0.2
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Docker Buildx
         if: steps.check.outputs.skip != 'true'
