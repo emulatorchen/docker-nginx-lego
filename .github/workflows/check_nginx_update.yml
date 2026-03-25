@@ -53,6 +53,7 @@ jobs:
           NEW="${{ steps.latest.outputs.version }}"
           sed -i "s/^FROM nginx:.*/FROM nginx:${NEW}/" src/Dockerfile
           sed -i "s/^FROM nginx:.*/FROM nginx:${NEW}-alpine/" src/Dockerfile-alpine
+          sed -i "s/^ARG NGINX_VERSION=.*/ARG NGINX_VERSION=${NEW}/" src/Dockerfile-ubuntu
 
       - name: Open pull request
         if: steps.compare.outputs.up_to_date == 'false'

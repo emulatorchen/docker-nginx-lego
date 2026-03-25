@@ -26,6 +26,19 @@ dev:
 dev-alpine:
 	docker buildx build --platform linux/amd64,linux/arm64 --tag emulator/docker-nginx-lego:dev-alpine -f ./Dockerfile-alpine ./
 
+build-ubuntu: Makefile Dockerfile-ubuntu
+	docker build --progress=plain -t emulator/docker-nginx-lego:local-ubuntu -f ./Dockerfile-ubuntu .
+
+run-ubuntu:
+	docker run -it --rm \
+	-e CERTBOT_EMAIL=user@example.com \
+	-e DEBUG=1 \
+	emulator/docker-nginx-lego:local-ubuntu
+
+dev-ubuntu:
+	docker buildx build --platform linux/amd64,linux/arm64 --tag emulator/docker-nginx-lego:dev-ubuntu -f ./Dockerfile-ubuntu ./
+
 push:
 	docker buildx build --platform linux/amd64,linux/386,linux/arm64,linux/arm/v7 --tag emulator/docker-nginx-lego:latest --pull --no-cache --push .
 	docker buildx build --platform linux/amd64,linux/arm64 --tag emulator/docker-nginx-lego:latest-alpine --pull --no-cache --push -f ./Dockerfile-alpine .
+	docker buildx build --platform linux/amd64,linux/arm64 --tag emulator/docker-nginx-lego:latest-ubuntu --pull --no-cache --push -f ./Dockerfile-ubuntu .
