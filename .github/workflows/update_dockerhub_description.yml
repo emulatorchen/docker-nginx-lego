@@ -9,6 +9,9 @@ on:
     paths:
       - "docs/dockerhub_description.md"
 
+permissions:
+  contents: read
+
 jobs:
   update:
     runs-on: ubuntu-latest
