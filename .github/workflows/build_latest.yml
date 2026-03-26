@@ -22,9 +22,9 @@ jobs:
     outputs:
       dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: dorny/paths-filter@v3.0.2
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
         id: filter
         with:
           filters: |
@@ -38,20 +38,20 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Run Docker on tmpfs
-        uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
+        uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
           tmpfs_size: 7
           swap_size: 9
 
       - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
+        uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
         with:
           should_login: ${{ github.event_name != 'pull_request' }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push latest Debian image
-        uses: docker/build-push-action@v7.0.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: ./src
           file: ./src/Dockerfile
@@ -70,20 +70,20 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Run Docker on tmpfs
-        uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
+        uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
           tmpfs_size: 7
           swap_size: 9
 
       - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
+        uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
         with:
           should_login: ${{ github.event_name != 'pull_request' }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push latest Alpine image
-        uses: docker/build-push-action@v7.0.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: ./src
           file: ./src/Dockerfile-alpine
@@ -100,20 +100,20 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Run Docker on tmpfs
-        uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
+        uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
           tmpfs_size: 7
           swap_size: 9
 
       - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
+        uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
         with:
           should_login: ${{ github.event_name != 'pull_request' }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push latest Ubuntu image
-        uses: docker/build-push-action@v7.0.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: ./src
           file: ./src/Dockerfile-ubuntu
