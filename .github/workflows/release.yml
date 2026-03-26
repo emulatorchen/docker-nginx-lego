@@ -174,6 +174,7 @@ jobs:
             [ -n "$R" ] && echo "${BASE}:lego${L}-nginx${N}-r${R}"
             echo "${BASE}:lego${L}-nginx${N}"
             echo "${BASE}:lego${L}"
+            echo "${BASE}:latest"
             echo 'EOF'
           } >> $GITHUB_OUTPUT
 
@@ -223,6 +224,7 @@ jobs:
             [ -n "$R" ] && echo "${BASE}:lego${L}-nginx${N}-r${R}-alpine"
             echo "${BASE}:lego${L}-nginx${N}-alpine"
             echo "${BASE}:lego${L}-alpine"
+            echo "${BASE}:latest-alpine"
             echo 'EOF'
           } >> $GITHUB_OUTPUT
 
@@ -270,6 +272,7 @@ jobs:
             [ -n "$R" ] && echo "${BASE}:lego${L}-nginx${N}-r${R}-ubuntu"
             echo "${BASE}:lego${L}-nginx${N}-ubuntu"
             echo "${BASE}:lego${L}-ubuntu"
+            echo "${BASE}:latest-ubuntu"
             echo 'EOF'
           } >> $GITHUB_OUTPUT
 
@@ -371,7 +374,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"username\":\"${DOCKERHUB_USERNAME}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
             | grep -o '"token":"[^"]*"' | sed 's/"token":"//;s/"//')
-          TAGS="lego${L}-nginx${N} lego${L} lego${L}-nginx${N}-alpine lego${L}-alpine lego${L}-nginx${N}-ubuntu lego${L}-ubuntu"
+          TAGS="lego${L}-nginx${N} lego${L} latest lego${L}-nginx${N}-alpine lego${L}-alpine latest-alpine lego${L}-nginx${N}-ubuntu lego${L}-ubuntu latest-ubuntu"
           [ -n "$R" ] && TAGS="lego${L}-nginx${N}-r${R} lego${L}-nginx${N}-r${R}-alpine lego${L}-nginx${N}-r${R}-ubuntu ${TAGS}"
           for TAG in $TAGS; do
             echo -n "Deleting ${BASE}:${TAG} ... "

@@ -46,11 +46,9 @@ jobs:
       - name: Perform setup steps
         uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
         with:
-          should_login: ${{ github.event_name != 'pull_request' }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          should_login: false
 
-      - name: Build and push latest Debian image
+      - name: Build Debian image (validate only)
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: ./src
@@ -60,7 +58,7 @@ jobs:
             linux/386
             linux/arm64
             linux/arm/v7
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
           tags: emulator/docker-nginx-lego:latest
 
   docker_buildx_alpine:
@@ -78,11 +76,9 @@ jobs:
       - name: Perform setup steps
         uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
         with:
-          should_login: ${{ github.event_name != 'pull_request' }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          should_login: false
 
-      - name: Build and push latest Alpine image
+      - name: Build Alpine image (validate only)
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: ./src
@@ -90,7 +86,7 @@ jobs:
           platforms: |
             linux/amd64
             linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
           tags: emulator/docker-nginx-lego:latest-alpine
 
   docker_buildx_ubuntu:
@@ -108,11 +104,9 @@ jobs:
       - name: Perform setup steps
         uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
         with:
-          should_login: ${{ github.event_name != 'pull_request' }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          should_login: false
 
-      - name: Build and push latest Ubuntu image
+      - name: Build Ubuntu image (validate only)
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: ./src
@@ -120,5 +114,5 @@ jobs:
           platforms: |
             linux/amd64
             linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
           tags: emulator/docker-nginx-lego:latest-ubuntu
