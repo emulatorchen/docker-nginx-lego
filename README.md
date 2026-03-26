@@ -2,7 +2,7 @@
 
 Automatically create and renew website SSL certificates using the
 [Let's Encrypt][1] free certificate authority and its client [*lego*][2].
-Built on top of the [official Nginx Docker images][9] (both Debian and Alpine),
+Built on top of the [official Nginx Docker images][9] (Debian, Alpine, and Ubuntu 24.04),
 and uses OpenSSL/LibreSSL to automatically create the Diffie-Hellman parameters
 used during the initial handshake of some ciphers.
 
@@ -29,7 +29,7 @@ The upstream author [suggested this fork][pr373] and offered to link to it.
 - Will report correct [exit code][6] when stopped/killed/failed.
 - You can do a live reload of configs by [sending in a `SIGHUP`](./docs/advanced_usage.md#manualforce-renewal) signal (no container restart needed).
 - Possibility to use this image **offline** with the help of a [local CA](./docs/advanced_usage.md#local-ca).
-- Both [Debian and Alpine](./docs/dockerhub_tags.md) images built for [multiple architectures][14].
+- [Debian, Alpine, and Ubuntu 24.04](./docs/dockerhub_tags.md) images built for [multiple architectures][14].
 - **No Python dependency** — lego is a static Go binary; images are significantly smaller.
 - **150+ DNS providers** supported natively by lego (see [lego provider list][lego-providers]).
 

@@ -345,3 +345,32 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- [GitHub release](https://github.com/${{ github.repository }}/releases/tag/${{ needs.resolve_tag.outputs.tag }})" >> $GITHUB_STEP_SUMMARY
           echo "- Docker Hub: \`emulator/docker-nginx-lego:${{ needs.resolve_tag.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+
+  cleanup_on_cancel:
+    name: "Remove Docker Hub tags on cancellation"
+    needs: [resolve_tag]
+    if: cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete Docker Hub tags
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          L="${{ needs.resolve_tag.outputs.lego }}"
+          N="${{ needs.resolve_tag.outputs.nginx }}"
+          R="${{ needs.resolve_tag.outputs.revision }}"
+          [ -z "$L" ] && { echo "No tag outputs available — nothing to clean up"; exit 0; }
+          BASE="emulator/docker-nginx-lego"
+          token=$(curl -sf -X POST "https://hub.docker.com/v2/users/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"${DOCKERHUB_USERNAME}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
+            | grep -o '"token":"[^"]*"' | sed 's/"token":"//;s/"//')
+          TAGS="lego${L}-nginx${N} lego${L} lego${L}-nginx${N}-alpine lego${L}-alpine lego${L}-nginx${N}-ubuntu lego${L}-ubuntu"
+          [ -n "$R" ] && TAGS="lego${L}-nginx${N}-r${R} lego${L}-nginx${N}-r${R}-alpine lego${L}-nginx${N}-r${R}-ubuntu ${TAGS}"
+          for TAG in $TAGS; do
+            echo -n "Deleting ${BASE}:${TAG} ... "
+            curl -s -o /dev/null -w "%{http_code}\n" -X DELETE \
+              "https://hub.docker.com/v2/repositories/${BASE}/tags/${TAG}/" \
+              -H "Authorization: Bearer ${token}" || true
+          done

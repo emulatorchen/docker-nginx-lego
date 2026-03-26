@@ -6,8 +6,9 @@ in production — `latest` tracks `master` and is not considered stable.
 ## Tag Format
 
 ```
-lego<LEGO_VERSION>-nginx<NGINX_VERSION>
-lego<LEGO_VERSION>-nginx<NGINX_VERSION>-alpine
+lego<LEGO_VERSION>-nginx<NGINX_VERSION>          # Debian
+lego<LEGO_VERSION>-nginx<NGINX_VERSION>-alpine   # Alpine
+lego<LEGO_VERSION>-nginx<NGINX_VERSION>-ubuntu   # Ubuntu 24.04
 ```
 
 For script-only fixes (no component version change), a revision suffix is
@@ -16,10 +17,11 @@ appended:
 ```
 lego<LEGO_VERSION>-nginx<NGINX_VERSION>-r<N>
 lego<LEGO_VERSION>-nginx<NGINX_VERSION>-r<N>-alpine
+lego<LEGO_VERSION>-nginx<NGINX_VERSION>-r<N>-ubuntu
 ```
 
-Shorter tags (`lego<X.Y.Z>`, `lego<X.Y.Z>-alpine`) always point to the latest
-nginx for that lego version, and move as updates are released.
+Shorter tags (`lego<X.Y.Z>`, `lego<X.Y.Z>-alpine`, `lego<X.Y.Z>-ubuntu`) always
+point to the latest nginx for that lego version, and move as updates are released.
 
 ## Current Tags
 
@@ -27,22 +29,24 @@ nginx for that lego version, and move as updates are released.
 | :------ | :----- | :------------------------------- |
 | 4.33.0  | 1.29.5 | `lego4.33.0-nginx1.29.5`         |
 |         |        | `lego4.33.0-nginx1.29.5-alpine`  |
+|         |        | `lego4.33.0-nginx1.29.5-ubuntu`  |
 
 ## Architecture Support
 
-| Architecture  | Debian | Alpine |
-| :------------ | :----- | :----- |
-| linux/amd64   | ✅     | ✅     |
-| linux/386     | ✅     | ❌     |
-| linux/arm64   | ✅     | ✅     |
-| linux/arm/v7  | ✅     | ❌     |
+| Architecture  | Debian | Alpine | Ubuntu |
+| :------------ | :----- | :----- | :----- |
+| linux/amd64   | ✅     | ✅     | ✅     |
+| linux/386     | ✅     | ❌     | ❌     |
+| linux/arm64   | ✅     | ✅     | ✅     |
+| linux/arm/v7  | ✅     | ❌     | ❌     |
 
 ## Update Cadence
 
 - **Lego bumps** — automated weekly via `check-lego-update` workflow; opens a
-  PR updating `ARG LEGO_VERSION` in both Dockerfiles.
+  PR updating `ARG LEGO_VERSION` in all three Dockerfiles.
 - **Nginx bumps** — automated weekly via `check-nginx-update` workflow; opens
-  a PR updating the `FROM nginx:` base image line.
+  a PR updating the `FROM nginx:` base image line in Debian/Alpine and
+  `ARG NGINX_VERSION` in the Ubuntu Dockerfile.
 - **Script-only fixes** — manual; tagged with a `-r<N>` revision suffix.
 - **Base image security patches** — nginx Docker Hub rebuilds the same tag
   periodically; re-pulling the image picks these up without a version bump.
