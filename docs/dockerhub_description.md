@@ -26,6 +26,7 @@ Tags encode the exact component versions:
 ```
 lego<X.Y.Z>-nginx<X.Y.Z>          # Debian
 lego<X.Y.Z>-nginx<X.Y.Z>-alpine   # Alpine
+lego<X.Y.Z>-nginx<X.Y.Z>-ubuntu   # Ubuntu 24.04
 ```
 
 Use a specific tag in production. See the
@@ -69,12 +70,12 @@ ssl_certificate_key /etc/letsencrypt/live/example.com.dns-route53/privkey.pem;
 
 ## Architectures
 
-| Architecture | Debian | Alpine |
-|---|---|---|
-| linux/amd64 | ✓ | ✓ |
-| linux/386 | ✓ | — |
-| linux/arm64 | ✓ | ✓ |
-| linux/arm/v7 | ✓ | — |
+| Architecture | Debian | Alpine | Ubuntu |
+|---|---|---|---|
+| linux/amd64 | ✓ | ✓ | ✓ |
+| linux/386 | ✓ | — | — |
+| linux/arm64 | ✓ | ✓ | ✓ |
+| linux/arm/v7 | ✓ | — | — |
 
 ## Links
 

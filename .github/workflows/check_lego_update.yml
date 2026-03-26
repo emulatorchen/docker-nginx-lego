@@ -49,6 +49,7 @@ jobs:
           NEW="${{ steps.latest.outputs.version }}"
           sed -i "s/ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${NEW}/" src/Dockerfile
           sed -i "s/ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${NEW}/" src/Dockerfile-alpine
+          sed -i "s/ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${NEW}/" src/Dockerfile-ubuntu
 
       - name: Open pull request
         if: steps.compare.outputs.up_to_date == 'false'
