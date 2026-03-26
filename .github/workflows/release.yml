@@ -25,7 +25,7 @@ jobs:
       revision: ${{ steps.resolve.outputs.revision }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Resolve tag
         id: resolve
@@ -63,13 +63,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.0.0
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Build Debian image (amd64)
-        uses: docker/build-push-action@v7.0.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: ./src
           file: ./src/Dockerfile
@@ -146,20 +146,21 @@ jobs:
   docker_buildx_debian:
     needs: [resolve_tag, integration_check]
     runs-on: ubuntu-latest
+    environment: release
     timeout-minutes: 90
     steps:
       - name: Run Docker on tmpfs
-        uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
+        uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
           tmpfs_size: 7
           swap_size: 9
 
       - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
+        uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
         with:
           should_login: true
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          password: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
 
       - name: Compute Debian tags
         id: tags
@@ -177,7 +178,7 @@ jobs:
           } >> $GITHUB_OUTPUT
 
       - name: Build and push all Debian images
-        uses: docker/build-push-action@v7.0.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: ./src
           file: ./src/Dockerfile
@@ -194,20 +195,21 @@ jobs:
   docker_buildx_alpine:
     needs: [resolve_tag, integration_check]
     runs-on: ubuntu-latest
+    environment: release
     timeout-minutes: 45
     steps:
       - name: Run Docker on tmpfs
-        uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
+        uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
           tmpfs_size: 7
           swap_size: 9
 
       - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
+        uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
         with:
           should_login: true
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          password: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
 
       - name: Compute Alpine tags
         id: tags
@@ -225,7 +227,7 @@ jobs:
           } >> $GITHUB_OUTPUT
 
       - name: Build and push all Alpine images
-        uses: docker/build-push-action@v7.0.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: ./src
           file: ./src/Dockerfile-alpine
@@ -240,20 +242,21 @@ jobs:
   docker_buildx_ubuntu:
     needs: [resolve_tag, integration_check]
     runs-on: ubuntu-latest
+    environment: release
     timeout-minutes: 45
     steps:
       - name: Run Docker on tmpfs
-        uses: JonasAlfredsson/docker-on-tmpfs@v2.0.0
+        uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
           tmpfs_size: 7
           swap_size: 9
 
       - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@v2.0.0
+        uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
         with:
           should_login: true
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          password: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
 
       - name: Compute Ubuntu tags
         id: tags
@@ -271,7 +274,7 @@ jobs:
           } >> $GITHUB_OUTPUT
 
       - name: Build and push all Ubuntu images
-        uses: docker/build-push-action@v7.0.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: ./src
           file: ./src/Dockerfile-ubuntu
@@ -288,7 +291,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Create GitHub release (auto-generated notes)
         if: inputs.notes == '' && !inputs.override_notes
@@ -332,7 +335,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@v4.0.0
+        uses: peter-evans/dockerhub-description@e98e4d1628a5f3be2be7c231e50981aee98723ae # v4.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -351,11 +354,12 @@ jobs:
     needs: [resolve_tag]
     if: cancelled()
     runs-on: ubuntu-latest
+    environment: release
     steps:
       - name: Delete Docker Hub tags
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
         run: |
           L="${{ needs.resolve_tag.outputs.lego }}"
           N="${{ needs.resolve_tag.outputs.nginx }}"
