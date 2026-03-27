@@ -1,0 +1,3 @@
+# Suppress CVEs that have been analyzed and accepted.
+# Format: CVE-YYYY-NNNNN  # reason why accepted
+# Example: CVE-2023-12345  # upstream won't fix; not exploitable in our nginx config
