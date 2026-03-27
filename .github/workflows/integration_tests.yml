@@ -154,5 +154,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          [ "${{ needs.integration_freemyip.result }}" = "failure" ] && exit 1
-          exit 0
+          if [ "${{ needs.integration_freemyip.result }}" = "failure" ]; then
+            exit 1
+          fi

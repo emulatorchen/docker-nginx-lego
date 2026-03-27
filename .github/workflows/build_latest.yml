@@ -236,6 +236,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          for result in "${{ needs.docker_buildx_debian.result }}" "${{ needs.docker_buildx_alpine.result }}" "${{ needs.docker_buildx_ubuntu.result }}"; do
-            [ "$result" = "failure" ] && exit 1
-          done
+          if [ "${{ needs.docker_buildx_debian.result }}" = "failure" ] || \
+             [ "${{ needs.docker_buildx_alpine.result }}" = "failure" ] || \
+             [ "${{ needs.docker_buildx_ubuntu.result }}" = "failure" ]; then
+            exit 1
+          fi
