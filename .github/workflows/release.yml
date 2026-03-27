@@ -11,9 +11,16 @@ on:
         description: "Override auto-generated notes entirely (use only the notes above)"
         type: boolean
         default: false
+      skip_security_scan:
+        description: "Skip vulnerability scan gate (emergency hotfix — requires reviewer approval)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  security-events: write
+  issues: write
+  pull-requests: write
 
 jobs:
   resolve_tag:
