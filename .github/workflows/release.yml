@@ -283,7 +283,14 @@ jobs:
             scan-target:ubuntu
 
   docker_buildx_debian:
-    needs: [resolve_tag, integration_check]
+    needs: [resolve_tag, integration_check, scan_debian, scan_alpine, scan_ubuntu]
+    if: |
+      always() &&
+      needs.resolve_tag.result == 'success' &&
+      needs.integration_check.result == 'success' &&
+      (needs.scan_debian.result == 'success' || needs.scan_debian.result == 'skipped') &&
+      (needs.scan_alpine.result == 'success' || needs.scan_alpine.result == 'skipped') &&
+      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped')
     runs-on: ubuntu-latest
     environment: release
     timeout-minutes: 90
@@ -333,7 +340,14 @@ jobs:
           tags: ${{ steps.tags.outputs.value }}
 
   docker_buildx_alpine:
-    needs: [resolve_tag, integration_check]
+    needs: [resolve_tag, integration_check, scan_debian, scan_alpine, scan_ubuntu]
+    if: |
+      always() &&
+      needs.resolve_tag.result == 'success' &&
+      needs.integration_check.result == 'success' &&
+      (needs.scan_debian.result == 'success' || needs.scan_debian.result == 'skipped') &&
+      (needs.scan_alpine.result == 'success' || needs.scan_alpine.result == 'skipped') &&
+      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped')
     runs-on: ubuntu-latest
     environment: release
     timeout-minutes: 45
@@ -381,7 +395,14 @@ jobs:
           tags: ${{ steps.tags.outputs.value }}
 
   docker_buildx_ubuntu:
-    needs: [resolve_tag, integration_check]
+    needs: [resolve_tag, integration_check, scan_debian, scan_alpine, scan_ubuntu]
+    if: |
+      always() &&
+      needs.resolve_tag.result == 'success' &&
+      needs.integration_check.result == 'success' &&
+      (needs.scan_debian.result == 'success' || needs.scan_debian.result == 'skipped') &&
+      (needs.scan_alpine.result == 'success' || needs.scan_alpine.result == 'skipped') &&
+      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped')
     runs-on: ubuntu-latest
     environment: release
     timeout-minutes: 45
