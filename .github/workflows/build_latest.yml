@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write  # upload SARIF to GitHub Security tab
 
 jobs:
   changes:
@@ -48,6 +49,43 @@ jobs:
         with:
           should_login: false
 
+      - name: Build Debian amd64 image for scanning
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: scan-target:debian
+
+      - name: Install Trivy v0.69.3
+        run: |
+          TRIVY_VERSION="0.69.3"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
+          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          sudo mv trivy /usr/local/bin/trivy
+          rm -f trivy_*
+
+      - name: Scan Debian image
+        run: |
+          trivy image \
+            --exit-code 0 \
+            --severity CRITICAL,HIGH \
+            --ignorefile .trivyignore \
+            --format sarif \
+            --output trivy-debian.sarif \
+            scan-target:debian
+
+      - name: Upload Debian SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@cb06a0a8527b2c6970741b3a0baa15231dc74a4c # v4.34.1
+        with:
+          sarif_file: trivy-debian.sarif
+          category: trivy-debian
+
       - name: Build Debian image (validate only)
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
@@ -78,6 +116,43 @@ jobs:
         with:
           should_login: false
 
+      - name: Build Alpine amd64 image for scanning
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile-alpine
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: scan-target:alpine
+
+      - name: Install Trivy v0.69.3
+        run: |
+          TRIVY_VERSION="0.69.3"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
+          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          sudo mv trivy /usr/local/bin/trivy
+          rm -f trivy_*
+
+      - name: Scan Alpine image
+        run: |
+          trivy image \
+            --exit-code 0 \
+            --severity CRITICAL,HIGH \
+            --ignorefile .trivyignore \
+            --format sarif \
+            --output trivy-alpine.sarif \
+            scan-target:alpine
+
+      - name: Upload Alpine SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@cb06a0a8527b2c6970741b3a0baa15231dc74a4c # v4.34.1
+        with:
+          sarif_file: trivy-alpine.sarif
+          category: trivy-alpine
+
       - name: Build Alpine image (validate only)
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
@@ -105,6 +180,43 @@ jobs:
         uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
         with:
           should_login: false
+
+      - name: Build Ubuntu amd64 image for scanning
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile-ubuntu
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: scan-target:ubuntu
+
+      - name: Install Trivy v0.69.3
+        run: |
+          TRIVY_VERSION="0.69.3"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
+          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          sudo mv trivy /usr/local/bin/trivy
+          rm -f trivy_*
+
+      - name: Scan Ubuntu image
+        run: |
+          trivy image \
+            --exit-code 0 \
+            --severity CRITICAL,HIGH \
+            --ignorefile .trivyignore \
+            --format sarif \
+            --output trivy-ubuntu.sarif \
+            scan-target:ubuntu
+
+      - name: Upload Ubuntu SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@cb06a0a8527b2c6970741b3a0baa15231dc74a4c # v4.34.1
+        with:
+          sarif_file: trivy-ubuntu.sarif
+          category: trivy-ubuntu
 
       - name: Build Ubuntu image (validate only)
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
