@@ -1,3 +1,9 @@
 .idea/
 *.env
 .env*
+
+# Trivy scan artifacts — generated locally or in CI, never committed
+trivy-*.json
+trivy-*.sarif
+trivy_*.tar.gz
+trivy_*.txt
