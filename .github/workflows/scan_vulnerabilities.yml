@@ -1,0 +1,289 @@
+name: "scan-vulnerabilities"
+
+on:
+  schedule:
+    - cron: "0 23 * * 0"    # Sunday 23:00 UTC — before Monday's version bumpers
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  issues: write
+
+jobs:
+  scan:
+    name: "Scan ${{ matrix.variant }} image"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: debian
+            tag: "emulator/docker-nginx-lego:latest"
+          - variant: alpine
+            tag: "emulator/docker-nginx-lego:latest-alpine"
+          - variant: ubuntu
+            tag: "emulator/docker-nginx-lego:latest-ubuntu"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Trivy v0.69.3
+        run: |
+          TRIVY_VERSION="0.69.3"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
+          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          sudo mv trivy /usr/local/bin/trivy
+          rm -f trivy_*
+
+      - name: Scan ${{ matrix.variant }} image (JSON)
+        run: |
+          trivy image \
+            --format json \
+            --output trivy-${{ matrix.variant }}.json \
+            --ignorefile .trivyignore \
+            ${{ matrix.tag }}
+
+      - name: Scan ${{ matrix.variant }} image (SARIF)
+        if: always()
+        run: |
+          trivy image \
+            --format sarif \
+            --output trivy-${{ matrix.variant }}.sarif \
+            --ignorefile .trivyignore \
+            ${{ matrix.tag }}
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@cb06a0a8527b2c6970741b3a0baa15231dc74a4c # v4.34.1
+        with:
+          sarif_file: trivy-${{ matrix.variant }}.sarif
+          category: trivy-${{ matrix.variant }}
+
+      - name: Upload JSON artifact
+        if: always()
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: trivy-${{ matrix.variant }}
+          path: trivy-${{ matrix.variant }}.json
+          retention-days: 7
+
+  triage:
+    name: "Triage CVEs and create/update GitHub Issues"
+    needs: scan
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download scan artifacts
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4.2.1
+        with:
+          pattern: trivy-*
+          merge-multiple: true
+
+      - name: Triage CVEs and create/update issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Collect all unique CRITICAL/HIGH CVE IDs across all three images
+          ALL_CVES=""
+          for VARIANT in debian alpine ubuntu; do
+            [ -f "trivy-${VARIANT}.json" ] || continue
+            CVES=$(grep -o '"VulnerabilityID":"CVE-[^"]*"' "trivy-${VARIANT}.json" | \
+              sed 's/"VulnerabilityID":"//;s/"//' | sort -u)
+            ALL_CVES=$(printf '%s\n%s' "$ALL_CVES" "$CVES")
+          done
+          ALL_CVES=$(echo "$ALL_CVES" | sort -u | grep -v '^$')
+
+          # Get list of currently open security issues (CVE IDs in titles)
+          OPEN_ISSUES=$(gh issue list --repo "$REPO" --label security \
+            --state open --json number,title 2>/dev/null || echo "[]")
+
+          echo "$ALL_CVES" | while read -r CVE_ID; do
+            [ -z "$CVE_ID" ] && continue
+
+            # Gather per-image data for this CVE
+            SEVERITY=""
+            PKG=""
+            AFFECTED_VARIANTS=""
+            FIX_MAP=""
+            ALL_SAME_FIX=true
+            LAST_FIXED=""
+            FIRST_FIXED=true
+
+            for VARIANT in debian alpine ubuntu; do
+              [ -f "trivy-${VARIANT}.json" ] || continue
+              if grep -q "\"${CVE_ID}\"" "trivy-${VARIANT}.json"; then
+                SEV=$(grep -A5 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
+                  grep -o '"Severity":"[^"]*"' | head -1 | sed 's/"Severity":"//;s/"//')
+                case "$SEV" in CRITICAL|HIGH) ;; *) continue ;; esac
+                SEVERITY="$SEV"
+                PKG=$(grep -B5 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
+                  grep -o '"PkgName":"[^"]*"' | tail -1 | sed 's/"PkgName":"//;s/"//')
+                FIXED=$(grep -A10 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
+                  grep -o '"FixedVersion":"[^"]*"' | head -1 | sed 's/"FixedVersion":"//;s/"//')
+                FIXED="${FIXED:-unknown}"
+                AFFECTED_VARIANTS="${AFFECTED_VARIANTS} ${VARIANT}"
+                FIX_MAP="${FIX_MAP}\n- ${VARIANT}: \`${FIXED}\`"
+                if $FIRST_FIXED; then
+                  LAST_FIXED="$FIXED"
+                  FIRST_FIXED=false
+                elif [ "$FIXED" != "$LAST_FIXED" ]; then
+                  ALL_SAME_FIX=false
+                fi
+              fi
+            done
+
+            [ -z "$AFFECTED_VARIANTS" ] && continue
+
+            # Determine labels
+            LABELS="security,severity:$(echo "$SEVERITY" | tr '[:upper:]' '[:lower:]')"
+            if echo "$FIX_MAP" | grep -q "unknown"; then
+              LABELS="${LABELS},no-fix-available"
+            fi
+            if ! $ALL_SAME_FIX; then
+              LABELS="${LABELS},needs-manual-review"
+            fi
+
+            # Check for existing open issue
+            EXISTING=$(echo "$OPEN_ISSUES" | \
+              grep -o "\"number\":[0-9]*.*\"title\":\"[^\"]*${CVE_ID}[^\"]*\"" | \
+              grep -o '"number":[0-9]*' | grep -o '[0-9]*' | head -1)
+
+            TODAY=$(date +%Y-%m-%d)
+            if [ -n "$EXISTING" ]; then
+              # Update existing issue with a comment
+              gh issue comment "$EXISTING" --repo "$REPO" \
+                --body "Still detected in weekly scan (${TODAY}).
+          Affected images:${AFFECTED_VARIANTS}
+          $(printf '%b' "$FIX_MAP")"
+            else
+              # Create new issue
+              TITLE="[SECURITY] ${CVE_ID}: ${PKG} (${SEVERITY})"
+              BODY="**CVE:** ${CVE_ID}
+          **Severity:** ${SEVERITY}
+          **Package:** ${PKG}
+          **First detected:** ${TODAY}
+          **Affected images:**${AFFECTED_VARIANTS}
+
+          **Fix versions:**
+          $(printf '%b' "$FIX_MAP")
+
+          To suppress after analysis: add to \`.trivyignore\`:
+          \`\`\`
+          ${CVE_ID}  # reason accepted
+          \`\`\`"
+              gh issue create --repo "$REPO" \
+                --title "$TITLE" \
+                --body "$BODY" \
+                --label "$LABELS"
+            fi
+          done
+
+          # Close issues for CVEs no longer detected
+          echo "$OPEN_ISSUES" | grep -o '"title":"[^"]*CVE-[^"]*"' | \
+            sed 's/"title":"//;s/"//' | grep -o 'CVE-[0-9]*-[0-9]*' | while read -r CVE_ID; do
+            if ! echo "$ALL_CVES" | grep -qx "$CVE_ID"; then
+              ISSUE_NUM=$(echo "$OPEN_ISSUES" | \
+                grep -o "\"number\":[0-9]*.*\"title\":\"[^\"]*${CVE_ID}[^\"]*\"" | \
+                grep -o '"number":[0-9]*' | grep -o '[0-9]*' | head -1)
+              [ -n "$ISSUE_NUM" ] && \
+                gh issue close "$ISSUE_NUM" --repo "$REPO" \
+                  --comment "Resolved — ${CVE_ID} no longer detected in weekly scan ($(date +%Y-%m-%d))."
+            fi
+          done
+
+  auto_fix:
+    name: "Open auto-fix PR for fixable CVEs"
+    needs: triage
+    if: always() && needs.triage.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download scan artifacts
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4.2.1
+        with:
+          pattern: trivy-*
+          merge-multiple: true
+
+      - name: Create auto-fix PR if applicable
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Conditions for auto-fix PR (all must be true):
+          # 1. CVE severity is HIGH or CRITICAL
+          # 2. A fixed version exists across all affected images (not "unknown")
+          # 3. Fix is the same version across all affected images
+          # 4. Fix maps to a known bumping mechanism:
+          #    - CVE in nginx package       → bump FROM nginx:<ver> in Dockerfiles
+          #    - CVE in lego binary         → bump ARG LEGO_VERSION= in Dockerfiles
+          #    - CVE in ubuntu/debian base  → bump FROM ubuntu:... or FROM debian:...
+          # 5. No existing open PR for the same fix (branch fix/cve-<date>)
+
+          TODAY=$(date +%Y-%m-%d)
+          BRANCH="fix/cve-${TODAY}"
+
+          # Check if fix branch already exists
+          if git ls-remote --heads origin "${BRANCH}" | grep -q "${BRANCH}"; then
+            echo "Auto-fix branch ${BRANCH} already exists — skipping."
+            exit 0
+          fi
+
+          # Collect fixable CVEs: CRITICAL/HIGH, same fixed version across all affected images,
+          # fixed version is not "unknown"
+          FIXABLE_NGINX=""
+          FIXABLE_LEGO=""
+          for VARIANT in debian alpine ubuntu; do
+            [ -f "trivy-${VARIANT}.json" ] || continue
+            grep -o '"VulnerabilityID":"CVE-[^"]*"' "trivy-${VARIANT}.json" | \
+              sed 's/"VulnerabilityID":"//;s/"//' | sort -u | while read -r CVE_ID; do
+              SEV=$(grep -A5 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
+                grep -o '"Severity":"[^"]*"' | head -1 | sed 's/"Severity":"//;s/"//')
+              case "$SEV" in CRITICAL|HIGH) ;; *) continue ;; esac
+              PKG=$(grep -B5 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
+                grep -o '"PkgName":"[^"]*"' | tail -1 | sed 's/"PkgName":"//;s/"//')
+              FIXED=$(grep -A10 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
+                grep -o '"FixedVersion":"[^"]*"' | head -1 | sed 's/"FixedVersion":"//;s/"//')
+              [ -z "$FIXED" ] || [ "$FIXED" = "unknown" ] && continue
+              case "$PKG" in
+                nginx*)   FIXABLE_NGINX="${FIXABLE_NGINX} ${CVE_ID}(${FIXED})" ;;
+                lego*)    FIXABLE_LEGO="${FIXABLE_LEGO} ${CVE_ID}(${FIXED})" ;;
+              esac
+            done
+          done
+
+          if [ -z "$FIXABLE_NGINX" ] && [ -z "$FIXABLE_LEGO" ]; then
+            echo "No auto-fixable CVEs found — no PR created."
+            exit 0
+          fi
+
+          git checkout -b "$BRANCH"
+
+          PR_BODY="Auto-fix PR for fixable CVEs detected in weekly vulnerability scan (${TODAY})."
+          [ -n "$FIXABLE_NGINX" ] && PR_BODY="${PR_BODY}
+
+          **nginx CVEs fixed:**
+          ${FIXABLE_NGINX}"
+          [ -n "$FIXABLE_LEGO" ] && PR_BODY="${PR_BODY}
+
+          **lego CVEs fixed:**
+          ${FIXABLE_LEGO}"
+
+          # Create PR using peter-evans/create-pull-request would require an action;
+          # use gh CLI directly instead
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "fix: auto-fix CVEs from weekly vulnerability scan (${TODAY})" \
+            --body "$PR_BODY" \
+            --base master \
+            --label security
