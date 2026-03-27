@@ -90,24 +90,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          # Collect all unique CRITICAL/HIGH CVE IDs across all three images
-          ALL_CVES=""
-          for VARIANT in debian alpine ubuntu; do
-            [ -f "trivy-${VARIANT}.json" ] || continue
-            CVES=$(grep -o '"VulnerabilityID":"CVE-[^"]*"' "trivy-${VARIANT}.json" | \
-              sed 's/"VulnerabilityID":"//;s/"//' | sort -u)
-            ALL_CVES=$(printf '%s\n%s' "$ALL_CVES" "$CVES")
-          done
-          ALL_CVES=$(echo "$ALL_CVES" | sort -u | grep -v '^$')
+          TODAY=$(date +%Y-%m-%d)
 
-          # Get list of currently open security issues (CVE IDs in titles)
+          # Collect all unique CRITICAL/HIGH CVE IDs across all three images using jq
+          ALL_CVES=$(for VARIANT in debian alpine ubuntu; do
+            [ -f "trivy-${VARIANT}.json" ] || continue
+            jq -r '.Results[]?.Vulnerabilities[]? |
+              select(.Severity == "CRITICAL" or .Severity == "HIGH") |
+              .VulnerabilityID' "trivy-${VARIANT}.json"
+          done | sort -u)
+
+          if [ -z "$ALL_CVES" ]; then
+            echo "No CRITICAL/HIGH CVEs found across all images."
+            exit 0
+          fi
+
+          # Get list of currently open security issues
           OPEN_ISSUES=$(gh issue list --repo "$REPO" --label security \
             --state open --json number,title 2>/dev/null || echo "[]")
 
           echo "$ALL_CVES" | while read -r CVE_ID; do
             [ -z "$CVE_ID" ] && continue
 
-            # Gather per-image data for this CVE
             SEVERITY=""
             PKG=""
             AFFECTED_VARIANTS=""
@@ -118,52 +122,41 @@ jobs:
 
             for VARIANT in debian alpine ubuntu; do
               [ -f "trivy-${VARIANT}.json" ] || continue
-              if grep -q "\"${CVE_ID}\"" "trivy-${VARIANT}.json"; then
-                SEV=$(grep -A5 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
-                  grep -o '"Severity":"[^"]*"' | head -1 | sed 's/"Severity":"//;s/"//')
-                case "$SEV" in CRITICAL|HIGH) ;; *) continue ;; esac
-                SEVERITY="$SEV"
-                PKG=$(grep -B5 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
-                  grep -o '"PkgName":"[^"]*"' | tail -1 | sed 's/"PkgName":"//;s/"//')
-                FIXED=$(grep -A10 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
-                  grep -o '"FixedVersion":"[^"]*"' | head -1 | sed 's/"FixedVersion":"//;s/"//')
-                FIXED="${FIXED:-unknown}"
-                AFFECTED_VARIANTS="${AFFECTED_VARIANTS} ${VARIANT}"
-                FIX_MAP="${FIX_MAP}\n- ${VARIANT}: \`${FIXED}\`"
-                if $FIRST_FIXED; then
-                  LAST_FIXED="$FIXED"
-                  FIRST_FIXED=false
-                elif [ "$FIXED" != "$LAST_FIXED" ]; then
-                  ALL_SAME_FIX=false
-                fi
+              ROW=$(jq -r --arg cve "$CVE_ID" '
+                .Results[]?.Vulnerabilities[]? |
+                select(.VulnerabilityID == $cve and (.Severity == "CRITICAL" or .Severity == "HIGH")) |
+                "\(.Severity)\t\(.PkgName)\t\(.FixedVersion // "unknown")"
+              ' "trivy-${VARIANT}.json" | head -1)
+              [ -z "$ROW" ] && continue
+              SEV=$(echo "$ROW" | cut -f1)
+              PKG=$(echo "$ROW" | cut -f2)
+              FIXED=$(echo "$ROW" | cut -f3)
+              SEVERITY="$SEV"
+              AFFECTED_VARIANTS="${AFFECTED_VARIANTS} ${VARIANT}"
+              FIX_MAP="${FIX_MAP}\n- ${VARIANT}: \`${FIXED}\`"
+              if $FIRST_FIXED; then
+                LAST_FIXED="$FIXED"
+                FIRST_FIXED=false
+              elif [ "$FIXED" != "$LAST_FIXED" ]; then
+                ALL_SAME_FIX=false
               fi
             done
 
             [ -z "$AFFECTED_VARIANTS" ] && continue
 
-            # Determine labels
             LABELS="security,severity:$(echo "$SEVERITY" | tr '[:upper:]' '[:lower:]')"
-            if echo "$FIX_MAP" | grep -q "unknown"; then
-              LABELS="${LABELS},no-fix-available"
-            fi
-            if ! $ALL_SAME_FIX; then
-              LABELS="${LABELS},needs-manual-review"
-            fi
+            echo "$FIX_MAP" | grep -q "unknown" && LABELS="${LABELS},no-fix-available"
+            $ALL_SAME_FIX || LABELS="${LABELS},needs-manual-review"
 
-            # Check for existing open issue
-            EXISTING=$(echo "$OPEN_ISSUES" | \
-              grep -o "\"number\":[0-9]*.*\"title\":\"[^\"]*${CVE_ID}[^\"]*\"" | \
-              grep -o '"number":[0-9]*' | grep -o '[0-9]*' | head -1)
+            EXISTING=$(echo "$OPEN_ISSUES" | jq -r --arg cve "$CVE_ID" \
+              '.[] | select(.title | contains($cve)) | .number' | head -1)
 
-            TODAY=$(date +%Y-%m-%d)
             if [ -n "$EXISTING" ]; then
-              # Update existing issue with a comment
               gh issue comment "$EXISTING" --repo "$REPO" \
                 --body "Still detected in weekly scan (${TODAY}).
           Affected images:${AFFECTED_VARIANTS}
           $(printf '%b' "$FIX_MAP")"
             else
-              # Create new issue
               TITLE="[SECURITY] ${CVE_ID}: ${PKG} (${SEVERITY})"
               BODY="**CVE:** ${CVE_ID}
           **Severity:** ${SEVERITY}
@@ -186,16 +179,14 @@ jobs:
           done
 
           # Close issues for CVEs no longer detected
-          echo "$OPEN_ISSUES" | grep -o '"title":"[^"]*CVE-[^"]*"' | \
-            sed 's/"title":"//;s/"//' | grep -o 'CVE-[0-9]*-[0-9]*' | while read -r CVE_ID; do
-            if ! echo "$ALL_CVES" | grep -qx "$CVE_ID"; then
-              ISSUE_NUM=$(echo "$OPEN_ISSUES" | \
-                grep -o "\"number\":[0-9]*.*\"title\":\"[^\"]*${CVE_ID}[^\"]*\"" | \
-                grep -o '"number":[0-9]*' | grep -o '[0-9]*' | head -1)
-              [ -n "$ISSUE_NUM" ] && \
-                gh issue close "$ISSUE_NUM" --repo "$REPO" \
-                  --comment "Resolved — ${CVE_ID} no longer detected in weekly scan ($(date +%Y-%m-%d))."
-            fi
+          echo "$OPEN_ISSUES" | jq -r '.[].title' | grep -o 'CVE-[0-9]*-[0-9]*' | \
+          while read -r CVE_ID; do
+            echo "$ALL_CVES" | grep -qx "$CVE_ID" && continue
+            ISSUE_NUM=$(echo "$OPEN_ISSUES" | jq -r --arg cve "$CVE_ID" \
+              '.[] | select(.title | contains($cve)) | .number' | head -1)
+            [ -n "$ISSUE_NUM" ] && \
+              gh issue close "$ISSUE_NUM" --repo "$REPO" \
+                --comment "Resolved — ${CVE_ID} no longer detected in weekly scan (${TODAY})."
           done
 
   auto_fix:
