@@ -353,6 +353,115 @@ jobs:
           echo "- [GitHub release](https://github.com/${{ github.repository }}/releases/tag/${{ needs.resolve_tag.outputs.tag }})" >> $GITHUB_STEP_SUMMARY
           echo "- Docker Hub: \`emulator/docker-nginx-lego:${{ needs.resolve_tag.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
 
+  post_release_report:
+    name: "Post-release vulnerability report"
+    needs: [resolve_tag, github_release]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Trivy v0.69.3
+        run: |
+          TRIVY_VERSION="0.69.3"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
+          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          sudo mv trivy /usr/local/bin/trivy
+          rm -f trivy_*
+
+      - name: Scan released images
+        run: |
+          BASE="emulator/docker-nginx-lego"
+          trivy image --ignorefile .trivyignore --format json --output trivy-debian.json  "${BASE}:latest"
+          trivy image --ignorefile .trivyignore --format json --output trivy-alpine.json  "${BASE}:latest-alpine"
+          trivy image --ignorefile .trivyignore --format json --output trivy-ubuntu.json  "${BASE}:latest-ubuntu"
+
+      - name: Build step summary
+        if: always()
+        run: |
+          TAG="${{ needs.resolve_tag.outputs.tag }}"
+          echo "## Vulnerability Report — ${TAG}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for VARIANT in debian alpine ubuntu; do
+            echo "### ${VARIANT}" >> $GITHUB_STEP_SUMMARY
+            if [ -f "trivy-${VARIANT}.json" ]; then
+              COUNT=$(grep -o '"VulnerabilityID"' "trivy-${VARIANT}.json" | wc -l || echo 0)
+              CRIT=$(grep -o '"Severity":"CRITICAL"' "trivy-${VARIANT}.json" | wc -l || echo 0)
+              HIGH=$(grep -o '"Severity":"HIGH"' "trivy-${VARIANT}.json" | wc -l || echo 0)
+              echo "Total findings: ${COUNT} | Critical: ${CRIT} | High: ${HIGH}" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "Scan output not available" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Create or update GitHub Issues for new CVEs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
+        run: |
+          # Collect all unique CRITICAL/HIGH CVEs across all three images
+          # For each CVE: check if an open issue already exists, update or create
+          for VARIANT in debian alpine ubuntu; do
+            [ -f "trivy-${VARIANT}.json" ] || continue
+            # Extract CVE IDs + severity + package + installed version + fixed version
+            grep -o '"VulnerabilityID":"CVE-[^"]*"' "trivy-${VARIANT}.json" | \
+              sed 's/"VulnerabilityID":"//;s/"//' | sort -u
+          done | sort -u | while read CVE_ID; do
+            # Gather affected images and fix info
+            AFFECTED=""
+            FIX_VERSIONS=""
+            for VARIANT in debian alpine ubuntu; do
+              [ -f "trivy-${VARIANT}.json" ] || continue
+              # Check if this CVE appears in this variant
+              if grep -q "\"${CVE_ID}\"" "trivy-${VARIANT}.json"; then
+                SEVERITY=$(grep -A5 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
+                  grep -o '"Severity":"[^"]*"' | head -1 | sed 's/"Severity":"//;s/"//')
+                # Only process CRITICAL and HIGH
+                case "$SEVERITY" in CRITICAL|HIGH) ;; *) continue ;; esac
+                PKG=$(grep -B5 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
+                  grep -o '"PkgName":"[^"]*"' | tail -1 | sed 's/"PkgName":"//;s/"//')
+                FIXED=$(grep -A10 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
+                  grep -o '"FixedVersion":"[^"]*"' | head-1 | sed 's/"FixedVersion":"//;s/"//')
+                AFFECTED="${AFFECTED} ${VARIANT}"
+                FIX_VERSIONS="${FIX_VERSIONS} ${VARIANT}:${FIXED:-unknown}"
+              fi
+            done
+            [ -z "$AFFECTED" ] && continue
+
+            # Check for existing open issue
+            EXISTING=$(gh issue list --repo "$REPO" --label security \
+              --search "${CVE_ID}" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "$REPO" \
+                --body "Last seen in release \`${TAG}\` ($(date +%Y-%m-%d)). Affected images:${AFFECTED}. Fix versions:${FIX_VERSIONS}."
+            else
+              TITLE="[SECURITY] ${CVE_ID}: ${PKG} (${SEVERITY})"
+              BODY="**CVE:** ${CVE_ID}
+          **Severity:** ${SEVERITY}
+          **Package:** ${PKG}
+          **Detected in release:** \`${TAG}\`
+          **Affected images:**${AFFECTED}
+          **Fix versions:**${FIX_VERSIONS}
+
+          To suppress if accepted: add to \`.trivyignore\`:
+          \`\`\`
+          ${CVE_ID}  # reason
+          \`\`\`"
+              gh issue create --repo "$REPO" \
+                --title "$TITLE" \
+                --body "$BODY" \
+                --label security
+            fi
+          done
+
   cleanup:
     name: "Revert release on failure or cancellation"
     needs: [resolve_tag, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
