@@ -150,6 +150,138 @@ jobs:
           docker rm nginx-lego-test || true
           docker volume rm lego-test-certs || true
 
+  scan_debian:
+    name: "Scan Debian image for vulnerabilities"
+    needs: [resolve_tag, integration_check]
+    if: ${{ !inputs.skip_security_scan }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build Debian amd64 image for scanning
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          platforms: linux/amd64
+          load: true
+          pull: true
+          push: false
+          tags: scan-target:debian
+
+      - name: Install Trivy v0.69.3
+        run: |
+          TRIVY_VERSION="0.69.3"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
+          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          sudo mv trivy /usr/local/bin/trivy
+          rm -f trivy_*
+
+      - name: Scan Debian image (block on CRITICAL/HIGH)
+        run: |
+          trivy image \
+            --exit-code 1 \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --ignorefile .trivyignore \
+            --format table \
+            scan-target:debian
+
+  scan_alpine:
+    name: "Scan Alpine image for vulnerabilities"
+    needs: [resolve_tag, integration_check]
+    if: ${{ !inputs.skip_security_scan }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build Alpine amd64 image for scanning
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile-alpine
+          platforms: linux/amd64
+          load: true
+          pull: true
+          push: false
+          tags: scan-target:alpine
+
+      - name: Install Trivy v0.69.3
+        run: |
+          TRIVY_VERSION="0.69.3"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
+          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          sudo mv trivy /usr/local/bin/trivy
+          rm -f trivy_*
+
+      - name: Scan Alpine image (block on CRITICAL/HIGH)
+        run: |
+          trivy image \
+            --exit-code 1 \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --ignorefile .trivyignore \
+            --format table \
+            scan-target:alpine
+
+  scan_ubuntu:
+    name: "Scan Ubuntu image for vulnerabilities"
+    needs: [resolve_tag, integration_check]
+    if: ${{ !inputs.skip_security_scan }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build Ubuntu amd64 image for scanning
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: ./src
+          file: ./src/Dockerfile-ubuntu
+          platforms: linux/amd64
+          load: true
+          pull: true
+          push: false
+          tags: scan-target:ubuntu
+
+      - name: Install Trivy v0.69.3
+        run: |
+          TRIVY_VERSION="0.69.3"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
+          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          sudo mv trivy /usr/local/bin/trivy
+          rm -f trivy_*
+
+      - name: Scan Ubuntu image (block on CRITICAL/HIGH)
+        run: |
+          trivy image \
+            --exit-code 1 \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --ignorefile .trivyignore \
+            --format table \
+            scan-target:ubuntu
+
   docker_buildx_debian:
     needs: [resolve_tag, integration_check]
     runs-on: ubuntu-latest
