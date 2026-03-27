@@ -146,3 +146,13 @@ jobs:
           docker stop nginx-lego-test || true
           docker rm nginx-lego-test || true
           docker volume rm lego-test-certs || true
+
+  integration_status:
+    name: "Integration test status"
+    needs: [integration_freemyip]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          [ "${{ needs.integration_freemyip.result }}" = "failure" ] && exit 1
+          exit 0

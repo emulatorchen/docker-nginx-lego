@@ -228,3 +228,14 @@ jobs:
             linux/arm64
           push: false
           tags: emulator/docker-nginx-lego:latest-ubuntu
+
+  build_status:
+    name: "Build status"
+    needs: [docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for result in "${{ needs.docker_buildx_debian.result }}" "${{ needs.docker_buildx_alpine.result }}" "${{ needs.docker_buildx_ubuntu.result }}"; do
+            [ "$result" = "failure" ] && exit 1
+          done
