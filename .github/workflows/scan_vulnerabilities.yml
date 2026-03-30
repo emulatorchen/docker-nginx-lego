@@ -19,14 +19,22 @@ jobs:
       matrix:
         include:
           - variant: debian
-            tag: "emulator/docker-nginx-lego:latest"
+            dockerfile: src/Dockerfile
           - variant: alpine
-            tag: "emulator/docker-nginx-lego:latest-alpine"
+            dockerfile: src/Dockerfile-alpine
           - variant: ubuntu
-            tag: "emulator/docker-nginx-lego:latest-ubuntu"
+            dockerfile: src/Dockerfile-ubuntu
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build ${{ matrix.variant }} image for scanning
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: src
+          file: ${{ matrix.dockerfile }}
+          push: false
+          tags: scan-target:${{ matrix.variant }}
 
       - name: Install Trivy v0.69.3
         run: |
@@ -44,7 +52,7 @@ jobs:
             --format json \
             --output trivy-${{ matrix.variant }}.json \
             --ignorefile .trivyignore \
-            ${{ matrix.tag }}
+            scan-target:${{ matrix.variant }}
 
       - name: Scan ${{ matrix.variant }} image (SARIF)
         if: always()
@@ -53,7 +61,7 @@ jobs:
             --format sarif \
             --output trivy-${{ matrix.variant }}.sarif \
             --ignorefile .trivyignore \
-            ${{ matrix.tag }}
+            scan-target:${{ matrix.variant }}
 
       - name: Upload SARIF to GitHub Security tab
         if: always()
