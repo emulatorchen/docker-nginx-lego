@@ -234,6 +234,12 @@ jobs:
         with:
           token: ${{ secrets.CVE_AUTOFIX_TOKEN }}
 
+      - name: Set up QEMU for multi-arch pin verification
+        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
       - name: Download scan artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -275,6 +281,9 @@ jobs:
           OS_FIXES_DEB=""
           OS_FIXES_APK=""
           OS_FIXES_UBU=""
+          OS_CVE_MAP_DEB=""
+          OS_CVE_MAP_APK=""
+          OS_CVE_MAP_UBU=""
           LEGO_TRANSITIVE_CVES=""
 
           for VARIANT in debian alpine ubuntu; do
@@ -297,16 +306,23 @@ jobs:
               "\(.VulnerabilityID)\t\(.PkgName)\t\(.FixedVersion)"
             ' "trivy-${VARIANT}.json" | sort -u)
 
-            # OS package CVEs (class: os-pkgs) — pin version in Dockerfile
+            # OS package CVEs (class: os-pkgs) — pin version in Dockerfile.
+            # No COVERED_CVES dedup: OS_FIXES_* must always reflect the full current
+            # scan state so stale pins are removed when a base image ships the fix.
             while IFS=$'\t' read -r CVE_ID PKG FIXED; do
               [ -z "$CVE_ID" ] && continue
-              echo "$COVERED_CVES" | grep -qx "$CVE_ID" && continue
               case "$PKG" in nginx*|lego*) continue ;; esac
               FIXABLE_OS_ITEMS="${FIXABLE_OS_ITEMS} ${CVE_ID}(${PKG}@${VARIANT}=${FIXED})"
               case "$VARIANT" in
-                debian) OS_FIXES_DEB="${OS_FIXES_DEB} ${PKG}=${FIXED}" ;;
-                alpine) OS_FIXES_APK="${OS_FIXES_APK} ${PKG}=${FIXED}" ;;
-                ubuntu) OS_FIXES_UBU="${OS_FIXES_UBU} ${PKG}=${FIXED}" ;;
+                debian)
+                  OS_FIXES_DEB="${OS_FIXES_DEB} ${PKG}=${FIXED}"
+                  OS_CVE_MAP_DEB="${OS_CVE_MAP_DEB} ${CVE_ID}:${PKG}=${FIXED}" ;;
+                alpine)
+                  OS_FIXES_APK="${OS_FIXES_APK} ${PKG}=${FIXED}"
+                  OS_CVE_MAP_APK="${OS_CVE_MAP_APK} ${CVE_ID}:${PKG}=${FIXED}" ;;
+                ubuntu)
+                  OS_FIXES_UBU="${OS_FIXES_UBU} ${PKG}=${FIXED}"
+                  OS_CVE_MAP_UBU="${OS_CVE_MAP_UBU} ${CVE_ID}:${PKG}=${FIXED}" ;;
               esac
             done < <(jq -r '
               .Results[]? |
@@ -334,8 +350,19 @@ jobs:
             ' "trivy-${VARIANT}.json" | sort -u)
           done
 
+          # Detect whether existing pin blocks need cleanup (CVE resolved in base image).
+          # Checked here so we know to proceed even when no *new* CVEs are found.
+          NEEDS_CLEANUP=false
+          [ -z "$OS_FIXES_DEB" ] && \
+            grep -q "CVE security pins" src/Dockerfile 2>/dev/null && NEEDS_CLEANUP=true
+          [ -z "$OS_FIXES_APK" ] && \
+            grep -q "CVE security pins" src/Dockerfile-alpine 2>/dev/null && NEEDS_CLEANUP=true
+          [ -z "$OS_FIXES_UBU" ] && \
+            grep -q "CVE security pins" src/Dockerfile-ubuntu 2>/dev/null && NEEDS_CLEANUP=true
+
           if [ -z "$FIXABLE_NGINX" ] && [ -z "$FIXABLE_LEGO" ] && \
-             [ -z "$FIXABLE_OS_ITEMS" ] && [ -z "$LEGO_TRANSITIVE_CVES" ]; then
+             [ -z "$FIXABLE_OS_ITEMS" ] && [ -z "$LEGO_TRANSITIVE_CVES" ] && \
+             ! $NEEDS_CLEANUP; then
             echo "No auto-fixable CVEs found — no PR created."
             exit 0
           fi
@@ -344,12 +371,16 @@ jobs:
           git config user.email "github-actions@github.com"
           git config user.name "github-actions"
 
-          # Apply pinned OS package layer to each Dockerfile.
-          # Uses marker comments so subsequent runs replace rather than append.
-          # Insert before the VOLUME directive.
-          apply_os_pins() {
+          # Write or remove the CVE security pins block.
+          # Empty FIXES removes the block (base image shipped the fix natively).
+          write_os_pins() {
             local DOCKERFILE="$1" PM="$2" FIXES="$3"
-            [ -z "$FIXES" ] && return
+            if [ -z "$FIXES" ]; then
+              grep -q "CVE security pins" "$DOCKERFILE" 2>/dev/null || return
+              awk '/# --- CVE security pins \(auto-managed\)/{skip=1} /# --- end CVE security pins ---/{skip=0;next} !skip{print}' \
+                "$DOCKERFILE" > "${DOCKERFILE}.tmp" && mv "${DOCKERFILE}.tmp" "$DOCKERFILE"
+              return
+            fi
             local PKGS_FILE
             PKGS_FILE=$(mktemp)
             echo "$FIXES" | tr ' ' '\n' | grep -v '^$' | sort -u > "$PKGS_FILE"
@@ -380,9 +411,80 @@ jobs:
             rm -f "${DOCKERFILE}.tmp" "$PKGS_FILE"
           }
 
-          apply_os_pins "src/Dockerfile"        "apt" "$OS_FIXES_DEB"
-          apply_os_pins "src/Dockerfile-alpine" "apk" "$OS_FIXES_APK"
-          apply_os_pins "src/Dockerfile-ubuntu" "apt" "$OS_FIXES_UBU"
+          # For each pending package, test-build a minimal image for all target platforms.
+          # Passes only verified packages; records failures in FAIL_DIR (one file per CVE+pkg).
+          # File name: <CVE>___<pkg=ver>, contents: line 1 = platforms, rest = build error.
+          verify_and_filter_pins() {
+            local DOCKERFILE="$1" PM="$2" FIXES="$3" CVE_MAP="$4" FAIL_DIR="$5"
+            [ -z "$FIXES" ] && return
+            local BASE_IMG PLATFORMS
+            BASE_IMG=$(grep '^FROM ' "$DOCKERFILE" | head -1 | awk '{print $2}')
+            case "$DOCKERFILE" in
+              *Dockerfile-alpine) PLATFORMS="linux/amd64,linux/arm64" ;;
+              *Dockerfile-ubuntu) PLATFORMS="linux/amd64,linux/arm64" ;;
+              *)                  PLATFORMS="linux/amd64,linux/386,linux/arm64,linux/arm/v7" ;;
+            esac
+            local VERIFIED=""
+            for PKG_VER in $(echo "$FIXES" | tr ' ' '\n' | grep -v '^$' | sort -u); do
+              local TEST_DIR BUILD_LOG BUILD_OK
+              TEST_DIR=$(mktemp -d)
+              if [ "$PM" = "apt" ]; then
+                {
+                  echo "FROM ${BASE_IMG}"
+                  echo "RUN apt-get update && apt-get install -y --no-install-recommends ${PKG_VER} && rm -rf /var/lib/apt/lists/*"
+                } > "${TEST_DIR}/Dockerfile"
+              else
+                {
+                  echo "FROM ${BASE_IMG}"
+                  echo "RUN apk add --no-cache ${PKG_VER}"
+                } > "${TEST_DIR}/Dockerfile"
+              fi
+              BUILD_LOG=$(docker buildx build --platform "$PLATFORMS" "${TEST_DIR}" 2>&1)
+              BUILD_OK=$?
+              rm -rf "$TEST_DIR"
+              if [ "$BUILD_OK" -eq 0 ]; then
+                VERIFIED="${VERIFIED} ${PKG_VER}"
+              else
+                local PKG_NAME CVE_FOR_PKG
+                PKG_NAME=$(echo "$PKG_VER" | cut -d= -f1)
+                CVE_FOR_PKG=$(echo "$CVE_MAP" | tr ' ' '\n' | grep ":${PKG_NAME}=" | cut -d: -f1 | head -1)
+                {
+                  echo "$PLATFORMS"
+                  echo "$BUILD_LOG" | tail -10
+                } > "${FAIL_DIR}/${CVE_FOR_PKG}___${PKG_VER}"
+              fi
+            done
+            echo "$VERIFIED"
+          }
+
+          FAIL_DIR=$(mktemp -d)
+          VERIFIED_DEB=$(verify_and_filter_pins "src/Dockerfile"        "apt" "$OS_FIXES_DEB" "$OS_CVE_MAP_DEB" "$FAIL_DIR")
+          VERIFIED_APK=$(verify_and_filter_pins "src/Dockerfile-alpine" "apk" "$OS_FIXES_APK" "$OS_CVE_MAP_APK" "$FAIL_DIR")
+          VERIFIED_UBU=$(verify_and_filter_pins "src/Dockerfile-ubuntu" "apt" "$OS_FIXES_UBU" "$OS_CVE_MAP_UBU" "$FAIL_DIR")
+
+          write_os_pins "src/Dockerfile"        "apt" "$VERIFIED_DEB"
+          write_os_pins "src/Dockerfile-alpine" "apk" "$VERIFIED_APK"
+          write_os_pins "src/Dockerfile-ubuntu" "apt" "$VERIFIED_UBU"
+
+          # Post issue comments for packages that failed multi-arch verification
+          OPEN_ISSUES_PINS=$(gh issue list --repo "$REPO" --label security \
+            --state open --json number,title --limit 100 2>/dev/null || echo "[]")
+          for FAIL_FILE in "$FAIL_DIR"/*; do
+            [ -f "$FAIL_FILE" ] || continue
+            BASENAME=$(basename "$FAIL_FILE")
+            FAIL_CVE=${BASENAME%%___*}
+            FAIL_PKG=${BASENAME##*___}
+            FAIL_PLATFORMS=$(head -1 "$FAIL_FILE")
+            FAIL_MSG=$(tail -n +2 "$FAIL_FILE")
+            [ -z "$FAIL_CVE" ] && continue
+            ISSUE_NUM=$(echo "$OPEN_ISSUES_PINS" | jq -r --arg cve "$FAIL_CVE" \
+              '.[] | select(.title | contains($cve)) | .number' | head -1)
+            [ -z "$ISSUE_NUM" ] && continue
+            COMMENT=$(printf '**Auto-fix blocked for `%s`:** package not available on all target platforms (`%s`) — pin skipped for this image variant.\n```\n%s\n```' \
+              "$FAIL_PKG" "$FAIL_PLATFORMS" "$FAIL_MSG")
+            gh issue comment "$ISSUE_NUM" --repo "$REPO" --body "$COMMENT"
+          done
+          rm -rf "$FAIL_DIR"
 
           # Bump nginx FROM version if nginx package CVEs found
           if [ -n "$FIXABLE_NGINX" ]; then
@@ -448,6 +550,9 @@ jobs:
 
           **OS package CVEs pinned:** ${FIXABLE_OS_ITEMS}
           Fix versions differ by package manager (apt vs apk) — each variant pinned to its own version."
+          $NEEDS_CLEANUP && PR_BODY="${PR_BODY}
+
+          **Stale OS package pins removed:** base image update resolved the CVE natively — hardcoded version pins are no longer needed."
 
           gh pr create \
             --title "fix: auto-fix CVEs from vulnerability scan (${TODAY})" \
