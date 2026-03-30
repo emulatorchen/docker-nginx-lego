@@ -62,6 +62,13 @@ RUN chmod +x -R /scripts && \
     sed -ri '/^if \[ "\$1" = "nginx" \] \|\| \[ "\$1" = "nginx-debug" \]; then$/,${s//if echo "$1" | grep -q "nginx"; then/;b};$q1' /docker-entrypoint.sh
 
 # Create a volume to have persistent storage for the obtained certificates.
+# --- CVE security pins (auto-managed) ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libc-bin=2.41-12+deb13u2 \
+    libc6=2.41-12+deb13u2 \
+    && rm -rf /var/lib/apt/lists/*
+# --- end CVE security pins ---
+
 VOLUME /etc/letsencrypt
 
 # The Nginx parent Docker image already expose port 80, so we only need to add
