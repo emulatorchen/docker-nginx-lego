@@ -267,7 +267,7 @@ jobs:
           OS_FIXES_DEB=""
           OS_FIXES_APK=""
           OS_FIXES_UBU=""
-          HAS_LEGO_TRANSITIVE=false
+          LEGO_TRANSITIVE_CVES=""
 
           for VARIANT in debian alpine ubuntu; do
             [ -f "trivy-${VARIANT}.json" ] || continue
@@ -315,7 +315,8 @@ jobs:
             while IFS=$'\t' read -r CVE_ID PKG FIXED; do
               [ -z "$CVE_ID" ] && continue
               echo "$COVERED_CVES" | grep -qx "$CVE_ID" && continue
-              HAS_LEGO_TRANSITIVE=true
+              echo "$LEGO_TRANSITIVE_CVES" | grep -qw "$CVE_ID" && continue
+              LEGO_TRANSITIVE_CVES="${LEGO_TRANSITIVE_CVES} ${CVE_ID}"
             done < <(jq -r '
               .Results[]? |
               select(.Type == "gobinary" and (.Target | test("lego"; "i"))) |
@@ -326,7 +327,7 @@ jobs:
           done
 
           if [ -z "$FIXABLE_NGINX" ] && [ -z "$FIXABLE_LEGO" ] && \
-             [ -z "$FIXABLE_OS_ITEMS" ] && ! $HAS_LEGO_TRANSITIVE; then
+             [ -z "$FIXABLE_OS_ITEMS" ] && [ -z "$LEGO_TRANSITIVE_CVES" ]; then
             echo "No auto-fixable CVEs found — no PR created."
             exit 0
           fi
@@ -390,7 +391,7 @@ jobs:
           # For transitive CVEs the fix version is a Go module version, not a lego version;
           # the only automated fix is upgrading lego itself to pick up the patched dependency.
           LEGO_NOTE=""
-          if [ -n "$FIXABLE_LEGO" ] || $HAS_LEGO_TRANSITIVE; then
+          if [ -n "$FIXABLE_LEGO" ] || [ -n "$LEGO_TRANSITIVE_CVES" ]; then
             LATEST_LEGO=$(curl -sf "https://api.github.com/repos/go-acme/lego/releases/latest" \
               | jq -r '.tag_name' | sed 's/^v//')
             CURRENT_LEGO=$(grep -m1 '^ARG LEGO_VERSION=' src/Dockerfile \
@@ -401,6 +402,18 @@ jobs:
               LEGO_NOTE="Bumped lego ${CURRENT_LEGO} → ${LATEST_LEGO}"
             else
               LEGO_NOTE="lego already at latest (${CURRENT_LEGO:-unknown}); transitive CVEs require an upstream lego release"
+              # Comment on each affected issue so it's clear why no auto-fix was applied
+              if [ -n "$LEGO_TRANSITIVE_CVES" ]; then
+                OPEN_ISSUES_AF=$(gh issue list --repo "$REPO" --label security \
+                  --state open --json number,title --limit 100 2>/dev/null || echo "[]")
+                for TR_CVE in $LEGO_TRANSITIVE_CVES; do
+                  TR_ISSUE=$(echo "$OPEN_ISSUES_AF" | jq -r --arg cve "$TR_CVE" \
+                    '.[] | select(.title | contains($cve)) | .number' | head -1)
+                  [ -z "$TR_ISSUE" ] && continue
+                  gh issue comment "$TR_ISSUE" --repo "$REPO" --body \
+                    "**Auto-fix blocked:** ${TR_CVE} is in a Go module inside the lego binary (not an OS package). The only fix is a lego release that vendors the patched dependency. Lego is already at the latest release (\`${CURRENT_LEGO}\`) which still includes the vulnerable version. No action possible until lego upstream publishes a fix."
+                done
+              fi
             fi
           fi
 
@@ -420,7 +433,7 @@ jobs:
           [ -n "$FIXABLE_LEGO" ] && PR_BODY="${PR_BODY}
 
           **lego CVEs fixed:** ${FIXABLE_LEGO}"
-          $HAS_LEGO_TRANSITIVE && PR_BODY="${PR_BODY}
+          [ -n "$LEGO_TRANSITIVE_CVES" ] && PR_BODY="${PR_BODY}
 
           **lego transitive CVEs (gobinary):** ${LEGO_NOTE}"
           [ -n "$FIXABLE_OS_ITEMS" ] && PR_BODY="${PR_BODY}
