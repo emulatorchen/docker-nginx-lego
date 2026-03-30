@@ -75,6 +75,9 @@ jobs:
     needs: scan
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -100,14 +103,48 @@ jobs:
               .VulnerabilityID' "trivy-${VARIANT}.json"
           done | sort -u)
 
+          # Get open issues and PRs — needed for cleanup regardless of current CVE state
+          OPEN_ISSUES=$(gh issue list --repo "$REPO" --label security \
+            --state open --json number,title --limit 100 2>/dev/null || echo "[]")
+          OPEN_PRS=$(gh pr list --repo "$REPO" --label security \
+            --state open --json number,body --limit 100 2>/dev/null || echo "[]")
+
+          # Close issues for CVEs no longer detected
+          echo "$OPEN_ISSUES" | jq -r '.[].title' | grep -oE 'CVE-[0-9]+-[0-9]+' | sort -u | \
+          while read -r CVE_ID; do
+            [ -z "$CVE_ID" ] && continue
+            echo "$ALL_CVES" | grep -qx "$CVE_ID" && continue
+            ISSUE_NUM=$(echo "$OPEN_ISSUES" | jq -r --arg cve "$CVE_ID" \
+              '.[] | select(.title | contains($cve)) | .number' | head -1)
+            [ -n "$ISSUE_NUM" ] && \
+              gh issue close "$ISSUE_NUM" --repo "$REPO" \
+                --comment "Resolved — ${CVE_ID} no longer detected in weekly scan (${TODAY})."
+          done
+
+          # Close auto-fix PRs where all CVEs in the PR body are resolved
+          echo "$OPEN_PRS" | jq -c '.[]' | while read -r PR_JSON; do
+            PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
+            PR_BODY=$(echo "$PR_JSON" | jq -r '.body // ""')
+            PR_CVES=$(echo "$PR_BODY" | grep -oE 'CVE-[0-9]+-[0-9]+' | sort -u)
+            [ -z "$PR_CVES" ] && continue
+            ALL_RESOLVED=true
+            while read -r PR_CVE; do
+              [ -z "$PR_CVE" ] && continue
+              echo "$ALL_CVES" | grep -qx "$PR_CVE" && { ALL_RESOLVED=false; break; }
+            done <<< "$PR_CVES"
+            $ALL_RESOLVED && \
+              gh pr close "$PR_NUM" --repo "$REPO" \
+                --comment "All CVEs in this PR are resolved — closing automatically (${TODAY})."
+          done
+
           if [ -z "$ALL_CVES" ]; then
             echo "No CRITICAL/HIGH CVEs found across all images."
             exit 0
           fi
 
-          # Get list of currently open security issues
+          # Refresh open issues list after potential closes above
           OPEN_ISSUES=$(gh issue list --repo "$REPO" --label security \
-            --state open --json number,title 2>/dev/null || echo "[]")
+            --state open --json number,title --limit 100 2>/dev/null || echo "[]")
 
           echo "$ALL_CVES" | while read -r CVE_ID; do
             [ -z "$CVE_ID" ] && continue
@@ -178,17 +215,6 @@ jobs:
             fi
           done
 
-          # Close issues for CVEs no longer detected
-          echo "$OPEN_ISSUES" | jq -r '.[].title' | grep -o 'CVE-[0-9]*-[0-9]*' | \
-          while read -r CVE_ID; do
-            echo "$ALL_CVES" | grep -qx "$CVE_ID" && continue
-            ISSUE_NUM=$(echo "$OPEN_ISSUES" | jq -r --arg cve "$CVE_ID" \
-              '.[] | select(.title | contains($cve)) | .number' | head -1)
-            [ -n "$ISSUE_NUM" ] && \
-              gh issue close "$ISSUE_NUM" --repo "$REPO" \
-                --comment "Resolved — ${CVE_ID} no longer detected in weekly scan (${TODAY})."
-          done
-
   auto_fix:
     name: "Open auto-fix PR for fixable CVEs"
     needs: triage
@@ -210,16 +236,17 @@ jobs:
       - name: Create auto-fix PR if applicable
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           # Conditions for auto-fix PR (all must be true):
           # 1. CVE severity is HIGH or CRITICAL
-          # 2. A fixed version exists across all affected images (not "unknown")
-          # 3. Fix is the same version across all affected images
-          # 4. Fix maps to a known bumping mechanism:
-          #    - CVE in nginx package       → bump FROM nginx:<ver> in Dockerfiles
-          #    - CVE in lego binary         → bump ARG LEGO_VERSION= in Dockerfiles
-          #    - CVE in ubuntu/debian base  → bump FROM ubuntu:... or FROM debian:...
-          # 5. No existing open PR for the same fix (branch fix/cve-<date>)
+          # 2. A fixed version exists (not "unknown") on at least one affected image
+          # 3. Fix maps to a known mechanism:
+          #    - nginx package CVE          → bump FROM nginx:<ver> in Dockerfiles
+          #    - lego package CVE           → bump ARG LEGO_VERSION= in Dockerfiles
+          #    - gobinary CVE in lego path  → bump ARG LEGO_VERSION= to latest release
+          #    - OS package CVE (os-pkgs)   → pin package version in a dedicated RUN layer
+          # 4. CVE not already covered by an open security PR
 
           TODAY=$(date +%Y-%m-%d)
           BRANCH="fix/cve-${TODAY}"
@@ -230,51 +257,180 @@ jobs:
             exit 0
           fi
 
-          # Collect fixable CVEs: CRITICAL/HIGH, same fixed version across all affected images,
-          # fixed version is not "unknown"
+          # CVE IDs already covered by open security PRs (dedup across scan cycles)
+          COVERED_CVES=$(gh pr list --repo "$REPO" --label security --state open \
+            --json body --limit 100 2>/dev/null \
+            | jq -r '.[].body // ""' | grep -oE 'CVE-[0-9]+-[0-9]+' | sort -u || true)
+
           FIXABLE_NGINX=""
           FIXABLE_LEGO=""
+          FIXABLE_OS_ITEMS=""
+          OS_FIXES_DEB=""
+          OS_FIXES_APK=""
+          OS_FIXES_UBU=""
+          HAS_LEGO_TRANSITIVE=false
+
           for VARIANT in debian alpine ubuntu; do
             [ -f "trivy-${VARIANT}.json" ] || continue
-            grep -o '"VulnerabilityID":"CVE-[^"]*"' "trivy-${VARIANT}.json" | \
-              sed 's/"VulnerabilityID":"//;s/"//' | sort -u | while read -r CVE_ID; do
-              SEV=$(grep -A5 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
-                grep -o '"Severity":"[^"]*"' | head -1 | sed 's/"Severity":"//;s/"//')
-              case "$SEV" in CRITICAL|HIGH) ;; *) continue ;; esac
-              PKG=$(grep -B5 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
-                grep -o '"PkgName":"[^"]*"' | tail -1 | sed 's/"PkgName":"//;s/"//')
-              FIXED=$(grep -A10 "\"${CVE_ID}\"" "trivy-${VARIANT}.json" | \
-                grep -o '"FixedVersion":"[^"]*"' | head -1 | sed 's/"FixedVersion":"//;s/"//')
-              [ -z "$FIXED" ] || [ "$FIXED" = "unknown" ] && continue
+
+            # nginx / lego direct CVEs
+            while IFS=$'\t' read -r CVE_ID PKG FIXED; do
+              [ -z "$CVE_ID" ] && continue
+              echo "$COVERED_CVES" | grep -qx "$CVE_ID" && continue
               case "$PKG" in
-                nginx*)   FIXABLE_NGINX="${FIXABLE_NGINX} ${CVE_ID}(${FIXED})" ;;
-                lego*)    FIXABLE_LEGO="${FIXABLE_LEGO} ${CVE_ID}(${FIXED})" ;;
+                nginx*) FIXABLE_NGINX="${FIXABLE_NGINX} ${CVE_ID}(${FIXED})" ;;
+                lego*)  FIXABLE_LEGO="${FIXABLE_LEGO} ${CVE_ID}(${FIXED})" ;;
               esac
-            done
+            done < <(jq -r '
+              .Results[]?.Vulnerabilities[]? |
+              select(
+                (.Severity == "CRITICAL" or .Severity == "HIGH") and
+                ((.FixedVersion // "") != "") and .FixedVersion != "unknown"
+              ) |
+              "\(.VulnerabilityID)\t\(.PkgName)\t\(.FixedVersion)"
+            ' "trivy-${VARIANT}.json" | sort -u)
+
+            # OS package CVEs (class: os-pkgs) — pin version in Dockerfile
+            while IFS=$'\t' read -r CVE_ID PKG FIXED; do
+              [ -z "$CVE_ID" ] && continue
+              echo "$COVERED_CVES" | grep -qx "$CVE_ID" && continue
+              case "$PKG" in nginx*|lego*) continue ;; esac
+              FIXABLE_OS_ITEMS="${FIXABLE_OS_ITEMS} ${CVE_ID}(${PKG}@${VARIANT}=${FIXED})"
+              case "$VARIANT" in
+                debian) OS_FIXES_DEB="${OS_FIXES_DEB} ${PKG}=${FIXED}" ;;
+                alpine) OS_FIXES_APK="${OS_FIXES_APK} ${PKG}=${FIXED}" ;;
+                ubuntu) OS_FIXES_UBU="${OS_FIXES_UBU} ${PKG}=${FIXED}" ;;
+              esac
+            done < <(jq -r '
+              .Results[]? |
+              select(.Class == "os-pkgs") |
+              .Vulnerabilities[]? |
+              select(
+                (.Severity == "CRITICAL" or .Severity == "HIGH") and
+                ((.FixedVersion // "") != "") and .FixedVersion != "unknown"
+              ) |
+              "\(.VulnerabilityID)\t\(.PkgName)\t\(.FixedVersion)"
+            ' "trivy-${VARIANT}.json" | sort -u)
+
+            # Lego transitive CVEs — Go modules inside the lego binary (gobinary)
+            while IFS=$'\t' read -r CVE_ID PKG FIXED; do
+              [ -z "$CVE_ID" ] && continue
+              echo "$COVERED_CVES" | grep -qx "$CVE_ID" && continue
+              HAS_LEGO_TRANSITIVE=true
+            done < <(jq -r '
+              .Results[]? |
+              select(.Type == "gobinary" and (.Target | test("lego"; "i"))) |
+              .Vulnerabilities[]? |
+              select(.Severity == "CRITICAL" or .Severity == "HIGH") |
+              "\(.VulnerabilityID)\t\(.PkgName)\t\(.FixedVersion // "unknown")"
+            ' "trivy-${VARIANT}.json" | sort -u)
           done
 
-          if [ -z "$FIXABLE_NGINX" ] && [ -z "$FIXABLE_LEGO" ]; then
+          if [ -z "$FIXABLE_NGINX" ] && [ -z "$FIXABLE_LEGO" ] && \
+             [ -z "$FIXABLE_OS_ITEMS" ] && ! $HAS_LEGO_TRANSITIVE; then
             echo "No auto-fixable CVEs found — no PR created."
             exit 0
           fi
 
           git checkout -b "$BRANCH"
+          git config user.email "github-actions@github.com"
+          git config user.name "github-actions"
 
-          PR_BODY="Auto-fix PR for fixable CVEs detected in weekly vulnerability scan (${TODAY})."
+          # Apply pinned OS package layer to each Dockerfile.
+          # Uses marker comments so subsequent runs replace rather than append.
+          # Insert before the VOLUME directive.
+          apply_os_pins() {
+            local DOCKERFILE="$1" PM="$2" FIXES="$3"
+            [ -z "$FIXES" ] && return
+            local PKGS_FILE
+            PKGS_FILE=$(mktemp)
+            echo "$FIXES" | tr ' ' '\n' | grep -v '^$' | sort -u > "$PKGS_FILE"
+            awk '/# --- CVE security pins \(auto-managed\)/{skip=1} /# --- end CVE security pins ---/{skip=0;next} !skip{print}' \
+              "$DOCKERFILE" > "${DOCKERFILE}.tmp"
+            if [ "$PM" = "apt" ]; then
+              awk -v pf="$PKGS_FILE" '
+                /^VOLUME/ {
+                  print "# --- CVE security pins (auto-managed) ---"
+                  print "RUN apt-get update && apt-get install -y --no-install-recommends \\"
+                  while ((getline line < pf) > 0) printf "    %s \\\n", line
+                  print "    && rm -rf /var/lib/apt/lists/*"
+                  print "# --- end CVE security pins ---"
+                  print ""
+                }
+                { print }
+              ' "${DOCKERFILE}.tmp" > "$DOCKERFILE"
+            else
+              awk -v pf="$PKGS_FILE" '
+                /^VOLUME/ {
+                  printf "# --- CVE security pins (auto-managed) ---\nRUN apk add --no-cache"
+                  while ((getline line < pf) > 0) printf " %s", line
+                  printf "\n# --- end CVE security pins ---\n\n"
+                }
+                { print }
+              ' "${DOCKERFILE}.tmp" > "$DOCKERFILE"
+            fi
+            rm -f "${DOCKERFILE}.tmp" "$PKGS_FILE"
+          }
+
+          apply_os_pins "src/Dockerfile"        "apt" "$OS_FIXES_DEB"
+          apply_os_pins "src/Dockerfile-alpine" "apk" "$OS_FIXES_APK"
+          apply_os_pins "src/Dockerfile-ubuntu" "apt" "$OS_FIXES_UBU"
+
+          # Bump nginx FROM version if nginx package CVEs found
+          if [ -n "$FIXABLE_NGINX" ]; then
+            RAW_VER=$(echo "$FIXABLE_NGINX" | grep -oE '\([^)]+\)' | head -1 | tr -d '()')
+            NGINX_VER=$(echo "$RAW_VER" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+            if [ -n "$NGINX_VER" ]; then
+              sed -i "s|^FROM nginx:[0-9][0-9.]*$|FROM nginx:${NGINX_VER}|" src/Dockerfile
+              sed -i "s|^FROM nginx:[0-9][0-9.]*-alpine|FROM nginx:${NGINX_VER}-alpine|" \
+                src/Dockerfile-alpine
+            fi
+          fi
+
+          # Bump lego ARG version for direct lego CVEs or transitive gobinary CVEs.
+          # For transitive CVEs the fix version is a Go module version, not a lego version;
+          # the only automated fix is upgrading lego itself to pick up the patched dependency.
+          LEGO_NOTE=""
+          if [ -n "$FIXABLE_LEGO" ] || $HAS_LEGO_TRANSITIVE; then
+            LATEST_LEGO=$(curl -sf "https://api.github.com/repos/go-acme/lego/releases/latest" \
+              | jq -r '.tag_name' | sed 's/^v//')
+            CURRENT_LEGO=$(grep -m1 '^ARG LEGO_VERSION=' src/Dockerfile \
+              | sed 's/ARG LEGO_VERSION=//')
+            if [ -n "$LATEST_LEGO" ] && [ "$LATEST_LEGO" != "$CURRENT_LEGO" ]; then
+              sed -i "s/^ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${LATEST_LEGO}/" \
+                src/Dockerfile src/Dockerfile-alpine src/Dockerfile-ubuntu
+              LEGO_NOTE="Bumped lego ${CURRENT_LEGO} → ${LATEST_LEGO}"
+            else
+              LEGO_NOTE="lego already at latest (${CURRENT_LEGO:-unknown}); transitive CVEs require an upstream lego release"
+            fi
+          fi
+
+          # Only create a PR if there are actual Dockerfile changes
+          git add src/Dockerfile src/Dockerfile-alpine src/Dockerfile-ubuntu
+          if git diff --cached --quiet; then
+            echo "No Dockerfile changes to commit — skipping PR."
+            exit 0
+          fi
+          git commit -m "fix: auto-fix CVEs from vulnerability scan (${TODAY})"
+          git push origin "$BRANCH"
+
+          PR_BODY="Auto-fix PR for CVEs detected in weekly vulnerability scan (${TODAY})."
           [ -n "$FIXABLE_NGINX" ] && PR_BODY="${PR_BODY}
 
-          **nginx CVEs fixed:**
-          ${FIXABLE_NGINX}"
+          **nginx CVEs fixed:** ${FIXABLE_NGINX}"
           [ -n "$FIXABLE_LEGO" ] && PR_BODY="${PR_BODY}
 
-          **lego CVEs fixed:**
-          ${FIXABLE_LEGO}"
+          **lego CVEs fixed:** ${FIXABLE_LEGO}"
+          $HAS_LEGO_TRANSITIVE && PR_BODY="${PR_BODY}
 
-          # Create PR using peter-evans/create-pull-request would require an action;
-          # use gh CLI directly instead
-          git push origin "$BRANCH"
+          **lego transitive CVEs (gobinary):** ${LEGO_NOTE}"
+          [ -n "$FIXABLE_OS_ITEMS" ] && PR_BODY="${PR_BODY}
+
+          **OS package CVEs pinned:** ${FIXABLE_OS_ITEMS}
+          Fix versions differ by package manager (apt vs apk) — each variant pinned to its own version."
+
           gh pr create \
-            --title "fix: auto-fix CVEs from weekly vulnerability scan (${TODAY})" \
+            --title "fix: auto-fix CVEs from vulnerability scan (${TODAY})" \
             --body "$PR_BODY" \
             --base master \
             --label security
