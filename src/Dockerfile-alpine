@@ -1,4 +1,4 @@
-FROM nginx:1.29.5-alpine
+FROM nginx:1.29.7-alpine
 LABEL maintainer="emulatorchen"
 
 # FORK: Python/certbot removed. Only the static lego binary is installed.
