@@ -49,12 +49,18 @@ jobs:
         run: |
           SYNCED="${{ steps.synced.outputs.ref }}"
           LATEST="${{ steps.upstream.outputs.tag }}"
-          if [ "$SYNCED" = "$LATEST" ]; then
+          # Strip leading 'v' for semver comparison
+          SYNCED_V=$(echo "$SYNCED" | sed 's/^v//')
+          LATEST_V=$(echo "$LATEST" | sed 's/^v//')
+          # sort -V puts the highest version last; if LATEST_V is not the highest,
+          # we are at the same version or ahead — no action needed
+          HIGHEST=$(printf '%s\n%s' "$SYNCED_V" "$LATEST_V" | sort -V | tail -1)
+          if [ "$HIGHEST" != "$LATEST_V" ] || [ "$SYNCED_V" = "$LATEST_V" ]; then
             echo "up_to_date=true" >> $GITHUB_OUTPUT
-            echo "Already in sync with upstream (${SYNCED})"
+            echo "Up to date or ahead of upstream (ours: ${SYNCED}, upstream: ${LATEST})"
           else
             echo "up_to_date=false" >> $GITHUB_OUTPUT
-            echo "Upstream has moved: ${SYNCED} → ${LATEST}"
+            echo "Upstream is newer: ${SYNCED} → ${LATEST}"
           fi
 
       - name: Check for existing open issue
