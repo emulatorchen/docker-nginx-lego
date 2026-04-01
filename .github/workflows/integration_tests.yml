@@ -43,11 +43,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
-        with:
-          egress-policy: audit
-
       - name: Check secrets and variables
         id: check
         run: |
@@ -111,8 +106,6 @@ jobs:
         run: |
           docker run -d \
             --name nginx-lego-test \
-            --dns 8.8.8.8 \
-            --dns 1.1.1.1 \
             -e CERTBOT_EMAIL=${{ secrets.CERTBOT_EMAIL }} \
             -e STAGING=1 \
             -e RENEWAL_INTERVAL=9999d \
@@ -123,8 +116,8 @@ jobs:
             -p 8080:80 \
             -p 8443:443 \
             docker-nginx-lego:integration-test
-          # Wait up to 120s for cert to appear (harden-runner adds ~5s of setup overhead)
-          for i in $(seq 1 24); do
+          # Wait up to 90s for cert to appear
+          for i in $(seq 1 18); do
             sleep 5
             if docker exec nginx-lego-test test -f /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem 2>/dev/null; then
               echo "cert_obtained=true" >> $GITHUB_OUTPUT
