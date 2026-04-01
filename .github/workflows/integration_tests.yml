@@ -123,8 +123,8 @@ jobs:
             -p 8080:80 \
             -p 8443:443 \
             docker-nginx-lego:integration-test
-          # Wait up to 90s for cert to appear
-          for i in $(seq 1 18); do
+          # Wait up to 120s for cert to appear (harden-runner adds ~5s of setup overhead)
+          for i in $(seq 1 24); do
             sleep 5
             if docker exec nginx-lego-test test -f /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem 2>/dev/null; then
               echo "cert_obtained=true" >> $GITHUB_OUTPUT

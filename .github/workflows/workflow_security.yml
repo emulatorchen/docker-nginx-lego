@@ -200,12 +200,19 @@ jobs:
           # Run on PR branch
           actionlint .github/workflows/*.yml 2>/dev/null | sort > /tmp/pr_lint.txt || true
 
-          # Normalize: keep only actual error lines (^.github/ prefix), strip file:line:col.
-          # Actionlint also emits context decoration lines ("190 |  run:", "    |  ^~~~")
-          # that must be discarded first — otherwise line-number shifts from unrelated
-          # insertions cause pre-existing warnings to appear "new".
-          grep '^\.github/' /tmp/base_lint.txt | sed 's|^[^:]*:[0-9]*:[0-9]*: ||' | sort -u > /tmp/base_norm.txt
-          grep '^\.github/' /tmp/pr_lint.txt   | sed 's|^[^:]*:[0-9]*:[0-9]*: ||' | sort -u > /tmp/pr_norm.txt
+          # Normalize: keep only actual error lines (^.github/ prefix), then strip ALL
+          # positional info so line-number shifts from unrelated insertions never make a
+          # pre-existing warning appear "new":
+          #   1. Strip leading "file:LINE:COL: " (workflow-file positions)
+          #   2. Strip embedded shellcheck inner positions "SC####:SEVERITY:LINE:COL:"
+          #      → "SC####:SEVERITY:" so adding lines inside run: blocks doesn't matter
+          normalize() {
+            grep '^\.github/' "$1" \
+              | sed 's|^[^:]*:[0-9]*:[0-9]*: ||; s/\(SC[0-9]*:[a-z]*\):[0-9]*:[0-9]*:/\1:/g' \
+              | sort -u
+          }
+          normalize /tmp/base_lint.txt > /tmp/base_norm.txt
+          normalize /tmp/pr_lint.txt   > /tmp/pr_norm.txt
 
           NEW=$(comm -13 /tmp/base_norm.txt /tmp/pr_norm.txt | grep -v '^$' || true)
           PREEXIST=$(grep -v '^$' /tmp/pr_norm.txt || true)
