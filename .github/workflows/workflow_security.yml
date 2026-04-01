@@ -66,7 +66,7 @@ jobs:
           curl -sLo zizmor.tar.gz \
             "https://github.com/zizmorcore/zizmor/releases/download/v1.23.1/zizmor-x86_64-unknown-linux-gnu.tar.gz"
           echo "67a8df0a14352dd81882e14876653d097b99b0f4f6b6fe798edc0320cff27aff  zizmor.tar.gz" | sha256sum -c -
-          tar xzf zizmor.tar.gz zizmor
+          tar xzf zizmor.tar.gz
           sudo mv zizmor /usr/local/bin/zizmor
           rm -f zizmor.tar.gz
 
@@ -125,13 +125,22 @@ jobs:
           [ -n "$NEW" ]      || NEW="None"
           [ -n "$PREEXIST" ] || PREEXIST="None"
 
-          BODY=$(printf '%s\n\n%s\n\n%s\n```\n%s\n```\n\n%s\n```\n%s\n```\n' \
-            "<!-- workflow-security-zizmor -->" \
-            "## Workflow Static Analysis — zizmor" \
-            "### 🚫 New issues (blocking — introduced by this PR)" \
-            "$NEW" \
-            "### ℹ️ Pre-existing issues (non-blocking — already in codebase)" \
-            "$PREEXIST")
+          {
+            echo "<!-- workflow-security-zizmor -->"
+            echo ""
+            echo "## Workflow Static Analysis — zizmor"
+            echo ""
+            echo "### 🚫 New issues (blocking — introduced by this PR)"
+            echo '```'
+            echo "$NEW"
+            echo '```'
+            echo ""
+            echo "### ℹ️ Pre-existing issues (non-blocking — already in codebase)"
+            echo '```'
+            echo "$PREEXIST"
+            echo '```'
+          } > /tmp/zizmor_body.txt
+          BODY=$(cat /tmp/zizmor_body.txt)
 
           CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
             --jq '.[] | select(.body | startswith("<!-- workflow-security-zizmor -->")) | .id' \
@@ -182,8 +191,13 @@ jobs:
           # Run on PR branch
           actionlint .github/workflows/*.yml 2>/dev/null | sort > /tmp/pr_lint.txt || true
 
-          NEW=$(comm -13 /tmp/base_lint.txt /tmp/pr_lint.txt | grep -v '^$' || true)
-          PREEXIST=$(cat /tmp/pr_lint.txt | grep -v '^$' || true)
+          # Normalize: strip leading "file:line:col: " so line-number shifts from
+          # unrelated insertions don't cause pre-existing warnings to appear "new"
+          sed 's|^[^:]*:[0-9]*:[0-9]*: ||' /tmp/base_lint.txt | sort -u > /tmp/base_norm.txt
+          sed 's|^[^:]*:[0-9]*:[0-9]*: ||' /tmp/pr_lint.txt   | sort -u > /tmp/pr_norm.txt
+
+          NEW=$(comm -13 /tmp/base_norm.txt /tmp/pr_norm.txt | grep -v '^$' || true)
+          PREEXIST=$(grep -v '^$' /tmp/pr_norm.txt || true)
 
           printf '%s\n' "$NEW"      > /tmp/actionlint_new.txt
           printf '%s\n' "$PREEXIST" > /tmp/actionlint_preexist.txt
@@ -208,13 +222,22 @@ jobs:
           [ -n "$NEW" ]      || NEW="None"
           [ -n "$PREEXIST" ] || PREEXIST="None"
 
-          BODY=$(printf '%s\n\n%s\n\n%s\n```\n%s\n```\n\n%s\n```\n%s\n```\n' \
-            "<!-- workflow-security-actionlint -->" \
-            "## Workflow Linting — actionlint" \
-            "### 🚫 New issues (blocking — introduced by this PR)" \
-            "$NEW" \
-            "### ℹ️ Pre-existing issues (non-blocking — already in codebase)" \
-            "$PREEXIST")
+          {
+            echo "<!-- workflow-security-actionlint -->"
+            echo ""
+            echo "## Workflow Linting — actionlint"
+            echo ""
+            echo "### 🚫 New issues (blocking — introduced by this PR)"
+            echo '```'
+            echo "$NEW"
+            echo '```'
+            echo ""
+            echo "### ℹ️ Pre-existing issues (non-blocking — already in codebase)"
+            echo '```'
+            echo "$PREEXIST"
+            echo '```'
+          } > /tmp/actionlint_body.txt
+          BODY=$(cat /tmp/actionlint_body.txt)
 
           CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
             --jq '.[] | select(.body | startswith("<!-- workflow-security-actionlint -->")) | .id' \

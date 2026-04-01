@@ -77,7 +77,7 @@ jobs:
           curl -sLo zizmor.tar.gz \
             "https://github.com/zizmorcore/zizmor/releases/download/v1.23.1/zizmor-x86_64-unknown-linux-gnu.tar.gz"
           echo "67a8df0a14352dd81882e14876653d097b99b0f4f6b6fe798edc0320cff27aff  zizmor.tar.gz" | sha256sum -c -
-          tar xzf zizmor.tar.gz zizmor
+          tar xzf zizmor.tar.gz
           sudo mv zizmor /usr/local/bin/zizmor
           rm -f zizmor.tar.gz
 
