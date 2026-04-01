@@ -84,8 +84,10 @@ jobs:
       - name: Compute delta (PR only)
         if: github.event_name == 'pull_request'
         id: delta
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git worktree add /tmp/base-wt "origin/${{ github.base_ref }}" --quiet 2>/dev/null
+          git worktree add /tmp/base-wt "origin/${BASE_REF}" --quiet 2>/dev/null
           zizmor --format sarif /tmp/base-wt/.github/workflows/ > /tmp/base.sarif 2>/dev/null || true
           git worktree remove /tmp/base-wt --force 2>/dev/null || true
 
@@ -169,9 +171,11 @@ jobs:
       - name: Compute delta (PR only)
         if: github.event_name == 'pull_request'
         id: delta
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           # Run on base branch (normalize paths to be relative to repo root)
-          git worktree add /tmp/base-wt "origin/${{ github.base_ref }}" --quiet 2>/dev/null
+          git worktree add /tmp/base-wt "origin/${BASE_REF}" --quiet 2>/dev/null
           (cd /tmp/base-wt && actionlint .github/workflows/*.yml 2>/dev/null | sort > /tmp/base_lint.txt) || true
           git worktree remove /tmp/base-wt --force 2>/dev/null || true
 
@@ -240,9 +244,12 @@ jobs:
 
       - name: Detect lego version change
         id: lego_change
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE_VER=$(git show "origin/${{ github.base_ref }}:src/Dockerfile" 2>/dev/null \
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE_VER=$(git show "origin/${BASE_REF}:src/Dockerfile" 2>/dev/null \
               | grep '^ARG LEGO_VERSION=' | cut -d= -f2 || true)
           else
             BASE_VER=$(git show "HEAD~1:src/Dockerfile" 2>/dev/null \
@@ -259,8 +266,10 @@ jobs:
 
       - name: Check cosign artifact availability for lego
         id: cosign_check
+        env:
+          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
         run: |
-          VER="${{ steps.lego_change.outputs.pr_version }}"
+          VER="${LEGO_VER}"
           PEM_STATUS=$(curl -sfIo /dev/null -w '%{http_code}' \
             "https://github.com/go-acme/lego/releases/download/v${VER}/lego_v${VER}_checksums.txt.pem" || echo 0)
           SIG_STATUS=$(curl -sfIo /dev/null -w '%{http_code}' \
@@ -285,8 +294,10 @@ jobs:
       - name: Verify lego cosign signature
         if: steps.cosign_check.outputs.available == 'true'
         id: cosign_verify
+        env:
+          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
         run: |
-          VER="${{ steps.lego_change.outputs.pr_version }}"
+          VER="${LEGO_VER}"
           BASE="https://github.com/go-acme/lego/releases/download/v${VER}"
           curl -sLo /tmp/lego_checksums.txt "${BASE}/lego_v${VER}_checksums.txt"
           curl -sLo /tmp/lego_checksums.pem "${BASE}/lego_v${VER}_checksums.txt.pem"
@@ -312,11 +323,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
+          CHANGED: ${{ steps.lego_change.outputs.changed }}
+          AVAILABLE: ${{ steps.cosign_check.outputs.available }}
+          VERIFIED: ${{ steps.cosign_verify.outputs.verified }}
         run: |
-          VER="${{ steps.lego_change.outputs.pr_version }}"
-          CHANGED="${{ steps.lego_change.outputs.changed }}"
-          AVAILABLE="${{ steps.cosign_check.outputs.available }}"
-          VERIFIED="${{ steps.cosign_verify.outputs.verified }}"
+          VER="${LEGO_VER}"
 
           if [ "$CHANGED" = "true" ]; then
             if [ "$AVAILABLE" = "true" ]; then
