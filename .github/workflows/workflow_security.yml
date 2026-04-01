@@ -1,0 +1,434 @@
+name: "workflow-security"
+
+# Static analysis of GitHub Actions workflows and lego binary signing checks.
+#
+# On pull_request:
+#   - Computes delta vs base branch for zizmor and actionlint
+#   - New issues (not in base) → blocks the PR + posts comment
+#   - Pre-existing issues → comment only, non-blocking
+#   - lego version change → cosign check (if artifacts available)
+#
+# On push to master / schedule / workflow_dispatch:
+#   - Uploads full SARIF to GitHub Security tab
+#   - Non-blocking
+
+on:
+  pull_request:
+    branches:
+      - "main"
+      - "master"
+  push:
+    branches:
+      - "main"
+      - "master"
+    paths:
+      - ".github/workflows/**"
+      - "src/Dockerfile*"
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      workflows: ${{ steps.filter.outputs.workflows }}
+      dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: filter
+        with:
+          filters: |
+            workflows:
+              - ".github/workflows/**"
+            dockerfiles:
+              - "src/Dockerfile*"
+
+  zizmor:
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true' || github.event_name != 'pull_request'
+    name: "Workflow static analysis (zizmor)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install zizmor v1.23.1
+        run: |
+          curl -sLo zizmor.tar.gz \
+            "https://github.com/zizmorcore/zizmor/releases/download/v1.23.1/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "67a8df0a14352dd81882e14876653d097b99b0f4f6b6fe798edc0320cff27aff  zizmor.tar.gz" | sha256sum -c -
+          tar xzf zizmor.tar.gz
+          sudo mv zizmor /usr/local/bin/zizmor
+          rm -f zizmor.tar.gz
+
+      - name: Scan all workflows (SARIF)
+        run: |
+          zizmor --format sarif .github/workflows/ > zizmor.sarif 2>/dev/null || true
+
+      - name: Upload SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@cb06a0a8527b2c6970741b3a0baa15231dc74a4c # v4.34.1
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor
+
+      - name: Compute delta (PR only)
+        if: github.event_name == 'pull_request'
+        id: delta
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git worktree add /tmp/base-wt "origin/${BASE_REF}" --quiet 2>/dev/null
+          zizmor --format sarif /tmp/base-wt/.github/workflows/ > /tmp/base.sarif 2>/dev/null || true
+          git worktree remove /tmp/base-wt --force 2>/dev/null || true
+
+          # Fingerprint: ruleId + file URI (no line — stable across refactors within a file)
+          fp() {
+            jq -r '.runs[].results[]? |
+              "\(.ruleId):\(.locations[0].physicalLocation.artifactLocation.uri)"' \
+              "$1" 2>/dev/null | sort -u
+          }
+
+          BASE_FP=$(fp /tmp/base.sarif)
+          PR_FP=$(fp zizmor.sarif)
+
+          NEW=$(comm -13 <(printf '%s\n' "$BASE_FP") <(printf '%s\n' "$PR_FP") | grep -v '^$' || true)
+          PREEXIST=$(jq -r '.runs[].results[]? |
+            "\(.ruleId):\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine // 0): \(.message.text // "")"' \
+            zizmor.sarif 2>/dev/null | sort -u | grep -v '^$' || true)
+
+          printf '%s\n' "$NEW"      > /tmp/zizmor_new.txt
+          printf '%s\n' "$PREEXIST" > /tmp/zizmor_preexist.txt
+
+          [ -z "$NEW" ] && echo "has_new=false" >> "$GITHUB_OUTPUT" || echo "has_new=true" >> "$GITHUB_OUTPUT"
+
+      - name: Post PR comment (same-repo PRs only)
+        if: |
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          NEW=$(cat /tmp/zizmor_new.txt)
+          PREEXIST=$(cat /tmp/zizmor_preexist.txt)
+          [ -n "$NEW" ]      || NEW="None"
+          [ -n "$PREEXIST" ] || PREEXIST="None"
+
+          {
+            echo "<!-- workflow-security-zizmor -->"
+            echo ""
+            echo "## Workflow Static Analysis — zizmor"
+            echo ""
+            echo "### 🚫 New issues (blocking — introduced by this PR)"
+            echo '```'
+            echo "$NEW"
+            echo '```'
+            echo ""
+            echo "### ℹ️ Pre-existing issues (non-blocking — already in codebase)"
+            echo '```'
+            echo "$PREEXIST"
+            echo '```'
+          } > /tmp/zizmor_body.txt
+          BODY=$(cat /tmp/zizmor_body.txt)
+
+          CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
+            --jq '.[] | select(.body | startswith("<!-- workflow-security-zizmor -->")) | .id' \
+            2>/dev/null | head -1 || true)
+          if [ -n "$CID" ]; then
+            gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" -f body="$BODY" >/dev/null
+          else
+            gh api --method POST "repos/${REPO}/issues/${PR}/comments" -f body="$BODY" >/dev/null
+          fi
+
+      - name: Fail on new issues
+        if: github.event_name == 'pull_request' && steps.delta.outputs.has_new == 'true'
+        run: |
+          echo "zizmor found new security issues introduced by this PR:"
+          cat /tmp/zizmor_new.txt
+          exit 1
+
+  actionlint:
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true' || github.event_name != 'pull_request'
+    name: "Workflow linting (actionlint)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install actionlint v1.7.12
+        run: |
+          curl -sLo actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          sudo mv actionlint /usr/local/bin/actionlint
+          rm -f actionlint.tar.gz
+
+      - name: Compute delta (PR only)
+        if: github.event_name == 'pull_request'
+        id: delta
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # Run on base branch (normalize paths to be relative to repo root)
+          git worktree add /tmp/base-wt "origin/${BASE_REF}" --quiet 2>/dev/null
+          (cd /tmp/base-wt && actionlint .github/workflows/*.yml 2>/dev/null | sort > /tmp/base_lint.txt) || true
+          git worktree remove /tmp/base-wt --force 2>/dev/null || true
+
+          # Run on PR branch
+          actionlint .github/workflows/*.yml 2>/dev/null | sort > /tmp/pr_lint.txt || true
+
+          # Normalize: keep only actual error lines (^.github/ prefix), then strip ALL
+          # positional info so line-number shifts from unrelated insertions never make a
+          # pre-existing warning appear "new":
+          #   1. Strip leading "file:LINE:COL: " (workflow-file positions)
+          #   2. Strip embedded shellcheck inner positions "SC####:SEVERITY:LINE:COL:"
+          #      → "SC####:SEVERITY:" so adding lines inside run: blocks doesn't matter
+          normalize() {
+            grep '^\.github/' "$1" \
+              | sed 's|^[^:]*:[0-9]*:[0-9]*: ||; s/\(SC[0-9]*:[a-z]*\):[0-9]*:[0-9]*:/\1:/g' \
+              | sort -u
+          }
+          normalize /tmp/base_lint.txt > /tmp/base_norm.txt
+          normalize /tmp/pr_lint.txt   > /tmp/pr_norm.txt
+
+          NEW=$(comm -13 /tmp/base_norm.txt /tmp/pr_norm.txt | grep -v '^$' || true)
+          PREEXIST=$(grep -v '^$' /tmp/pr_norm.txt || true)
+
+          printf '%s\n' "$NEW"      > /tmp/actionlint_new.txt
+          printf '%s\n' "$PREEXIST" > /tmp/actionlint_preexist.txt
+
+          [ -z "$NEW" ] && echo "has_new=false" >> "$GITHUB_OUTPUT" || echo "has_new=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run actionlint (non-PR — informational only)
+        if: github.event_name != 'pull_request'
+        run: actionlint .github/workflows/*.yml || true
+
+      - name: Post PR comment (same-repo PRs only)
+        if: |
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          NEW=$(cat /tmp/actionlint_new.txt)
+          PREEXIST=$(cat /tmp/actionlint_preexist.txt)
+          [ -n "$NEW" ]      || NEW="None"
+          [ -n "$PREEXIST" ] || PREEXIST="None"
+
+          {
+            echo "<!-- workflow-security-actionlint -->"
+            echo ""
+            echo "## Workflow Linting — actionlint"
+            echo ""
+            echo "### 🚫 New issues (blocking — introduced by this PR)"
+            echo '```'
+            echo "$NEW"
+            echo '```'
+            echo ""
+            echo "### ℹ️ Pre-existing issues (non-blocking — already in codebase)"
+            echo '```'
+            echo "$PREEXIST"
+            echo '```'
+          } > /tmp/actionlint_body.txt
+          BODY=$(cat /tmp/actionlint_body.txt)
+
+          CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
+            --jq '.[] | select(.body | startswith("<!-- workflow-security-actionlint -->")) | .id' \
+            2>/dev/null | head -1 || true)
+          if [ -n "$CID" ]; then
+            gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" -f body="$BODY" >/dev/null
+          else
+            gh api --method POST "repos/${REPO}/issues/${PR}/comments" -f body="$BODY" >/dev/null
+          fi
+
+      - name: Fail on new issues
+        if: github.event_name == 'pull_request' && steps.delta.outputs.has_new == 'true'
+        run: |
+          echo "actionlint found new issues introduced by this PR:"
+          cat /tmp/actionlint_new.txt
+          exit 1
+
+  lego_signing:
+    needs: changes
+    if: needs.changes.outputs.dockerfiles == 'true' || github.event_name == 'workflow_dispatch'
+    name: "lego binary signing check"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect lego version change
+        id: lego_change
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE_VER=$(git show "origin/${BASE_REF}:src/Dockerfile" 2>/dev/null \
+              | grep '^ARG LEGO_VERSION=' | cut -d= -f2 || true)
+          else
+            BASE_VER=$(git show "HEAD~1:src/Dockerfile" 2>/dev/null \
+              | grep '^ARG LEGO_VERSION=' | cut -d= -f2 || true)
+          fi
+          PR_VER=$(grep '^ARG LEGO_VERSION=' src/Dockerfile | cut -d= -f2)
+
+          echo "base_version=${BASE_VER}" >> "$GITHUB_OUTPUT"
+          echo "pr_version=${PR_VER}"     >> "$GITHUB_OUTPUT"
+          [ "$BASE_VER" != "$PR_VER" ] \
+            && echo "changed=true"  >> "$GITHUB_OUTPUT" \
+            || echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "lego version: base=${BASE_VER} pr=${PR_VER}"
+
+      - name: Check cosign artifact availability for lego
+        id: cosign_check
+        env:
+          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
+        run: |
+          VER="${LEGO_VER}"
+          PEM_STATUS=$(curl -sfIo /dev/null -w '%{http_code}' \
+            "https://github.com/go-acme/lego/releases/download/v${VER}/lego_v${VER}_checksums.txt.pem" || echo 0)
+          SIG_STATUS=$(curl -sfIo /dev/null -w '%{http_code}' \
+            "https://github.com/go-acme/lego/releases/download/v${VER}/lego_v${VER}_checksums.txt.sig" || echo 0)
+          if [ "$PEM_STATUS" = "200" ] && [ "$SIG_STATUS" = "200" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "Cosign artifacts available for lego v${VER}"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Cosign artifacts NOT available for lego v${VER} (pem=${PEM_STATUS} sig=${SIG_STATUS})"
+          fi
+
+      - name: Install cosign v3.0.5
+        if: steps.cosign_check.outputs.available == 'true'
+        run: |
+          curl -sLo cosign \
+            "https://github.com/sigstore/cosign/releases/download/v3.0.5/cosign-linux-amd64"
+          echo "db15cc99e6e4837daabab023742aaddc3841ce57f193d11b7c3e06c8003642b2  cosign" | sha256sum -c -
+          sudo mv cosign /usr/local/bin/cosign
+          sudo chmod +x /usr/local/bin/cosign
+
+      - name: Verify lego cosign signature
+        if: steps.cosign_check.outputs.available == 'true'
+        id: cosign_verify
+        env:
+          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
+        run: |
+          VER="${LEGO_VER}"
+          BASE="https://github.com/go-acme/lego/releases/download/v${VER}"
+          curl -sLo /tmp/lego_checksums.txt "${BASE}/lego_v${VER}_checksums.txt"
+          curl -sLo /tmp/lego_checksums.pem "${BASE}/lego_v${VER}_checksums.txt.pem"
+          curl -sLo /tmp/lego_checksums.sig "${BASE}/lego_v${VER}_checksums.txt.sig"
+
+          if cosign verify-blob \
+            --certificate /tmp/lego_checksums.pem \
+            --signature   /tmp/lego_checksums.sig \
+            --certificate-identity \
+              "https://github.com/go-acme/lego/.github/workflows/release.yml@refs/heads/master" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            /tmp/lego_checksums.txt; then
+            echo "verified=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post lego signing comment (same-repo PRs only)
+        if: |
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
+          CHANGED: ${{ steps.lego_change.outputs.changed }}
+          AVAILABLE: ${{ steps.cosign_check.outputs.available }}
+          VERIFIED: ${{ steps.cosign_verify.outputs.verified }}
+        run: |
+          VER="${LEGO_VER}"
+
+          if [ "$CHANGED" = "true" ]; then
+            if [ "$AVAILABLE" = "true" ]; then
+              if [ "$VERIFIED" = "true" ]; then
+                STATUS="✅ cosign signature verified for lego v${VER}"
+              else
+                STATUS="❌ cosign signature **FAILED** for lego v${VER} — do not merge"
+              fi
+            else
+              STATUS="⚠️ cosign artifacts not published for lego v${VER} (go-acme/lego does not yet sign releases). SHA256 checksum verification still runs at \`docker build\` time."
+            fi
+          else
+            if [ "$AVAILABLE" = "true" ] && [ "$VERIFIED" = "true" ]; then
+              STATUS="ℹ️ lego version unchanged (v${VER}). Informational cosign check: ✅ signature valid."
+            else
+              STATUS="ℹ️ lego version unchanged (v${VER}). Cosign artifacts not available — no signature check performed."
+            fi
+          fi
+
+          BODY=$(printf '%s\n\n## lego Binary Signing Check\n\n%s\n' \
+            "<!-- workflow-security-lego -->" "$STATUS")
+
+          CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
+            --jq '.[] | select(.body | startswith("<!-- workflow-security-lego -->")) | .id' \
+            2>/dev/null | head -1 || true)
+          if [ -n "$CID" ]; then
+            gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" -f body="$BODY" >/dev/null
+          else
+            gh api --method POST "repos/${REPO}/issues/${PR}/comments" -f body="$BODY" >/dev/null
+          fi
+
+      - name: Fail on cosign verification failure (new version only)
+        if: |
+          steps.lego_change.outputs.changed == 'true' &&
+          steps.cosign_check.outputs.available == 'true' &&
+          steps.cosign_verify.outputs.verified == 'false'
+        env:
+          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
+        run: |
+          echo "cosign signature verification FAILED for lego v${LEGO_VER}"
+          exit 1
+
+  workflow_security_status:
+    name: "Workflow security status"
+    needs: [zizmor, actionlint, lego_signing]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          ZIZMOR_RESULT: ${{ needs.zizmor.result }}
+          ACTIONLINT_RESULT: ${{ needs.actionlint.result }}
+          LEGO_RESULT: ${{ needs.lego_signing.result }}
+        run: |
+          if [ "$ZIZMOR_RESULT"     = "failure" ] || \
+             [ "$ACTIONLINT_RESULT" = "failure" ] || \
+             [ "$LEGO_RESULT"       = "failure" ]; then
+            exit 1
+          fi
