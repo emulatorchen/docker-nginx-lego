@@ -502,7 +502,7 @@ jobs:
 
   github_release:
     needs: [resolve_tag, release_gate]
-    if: needs.release_gate.result == 'success'
+    if: always() && needs.release_gate.result == 'success'
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -568,7 +568,7 @@ jobs:
   post_release_report:
     name: "Post-release vulnerability report"
     needs: [resolve_tag, github_release]
-    if: always() && needs.github_release.result == 'success'
+    if: always() && needs.github_release.result == 'success' && needs.release_gate.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       issues: write
