@@ -38,7 +38,7 @@ jobs:
         id: resolve
         run: |
           lego=$(grep -m1 '^ARG LEGO_VERSION=' src/Dockerfile | cut -d= -f2)
-          nginx=$(grep -m1 '^FROM nginx:' src/Dockerfile | sed 's/FROM nginx://')
+          nginx=$(grep -m1 '^FROM nginx:' src/Dockerfile | sed 's/FROM nginx://; s/@sha256:[^ ]*//')
           base="lego${lego}-nginx${nginx}"
 
           if git ls-remote --tags origin | grep -q "refs/tags/${base}$"; then
@@ -62,6 +62,85 @@ jobs:
         run: |
           git tag "${{ steps.resolve.outputs.tag }}"
           git push origin "${{ steps.resolve.outputs.tag }}"
+
+  security_preflight:
+    name: "Security preflight summary"
+    needs: [resolve_tag]
+    if: always() && needs.resolve_tag.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install zizmor v1.23.1
+        run: |
+          curl -sLo zizmor.tar.gz \
+            "https://github.com/zizmorcore/zizmor/releases/download/v1.23.1/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "67a8df0a14352dd81882e14876653d097b99b0f4f6b6fe798edc0320cff27aff  zizmor.tar.gz" | sha256sum -c -
+          tar xzf zizmor.tar.gz zizmor
+          sudo mv zizmor /usr/local/bin/zizmor
+          rm -f zizmor.tar.gz
+
+      - name: Install actionlint v1.7.12
+        run: |
+          curl -sLo actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          sudo mv actionlint /usr/local/bin/actionlint
+          rm -f actionlint.tar.gz
+
+      - name: Run security scans
+        run: |
+          zizmor --format plain .github/workflows/ > /tmp/zizmor_out.txt 2>&1 || true
+          actionlint .github/workflows/*.yml > /tmp/actionlint_out.txt 2>&1 || true
+
+      - name: Query open security issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue list --repo "${{ github.repository }}" \
+            --label security --state open \
+            --json number,title \
+            --jq '.[] | "  #\(.number): \(.title)"' > /tmp/security_issues.txt 2>/dev/null || true
+
+      - name: Write step summary
+        run: |
+          TAG="${{ needs.resolve_tag.outputs.tag }}"
+          {
+            echo "## Security Preflight — ${TAG}"
+            echo ""
+            echo "This summary is shown to the release reviewer before approving the environment gate."
+            echo ""
+            echo "### Workflow Static Analysis (zizmor)"
+            if [ -s /tmp/zizmor_out.txt ]; then
+              echo '```'
+              cat /tmp/zizmor_out.txt
+              echo '```'
+            else
+              echo "✅ No issues found"
+            fi
+            echo ""
+            echo "### Workflow Linting (actionlint)"
+            if [ -s /tmp/actionlint_out.txt ]; then
+              echo '```'
+              cat /tmp/actionlint_out.txt
+              echo '```'
+            else
+              echo "✅ No issues found"
+            fi
+            echo ""
+            echo "### Open Security Issues"
+            if [ -s /tmp/security_issues.txt ]; then
+              echo "⚠️ The following security issues are open — approving proceeds with known vulnerabilities:"
+              cat /tmp/security_issues.txt
+            else
+              echo "✅ No open security issues"
+            fi
+            echo ""
+            echo "---"
+            echo "_This preflight scan is informational only and never blocks the release._"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   integration_check:
     name: "Integration test (DNS-01 staging cert)"
@@ -283,14 +362,15 @@ jobs:
             scan-target:ubuntu
 
   docker_buildx_debian:
-    needs: [resolve_tag, integration_check, scan_debian, scan_alpine, scan_ubuntu]
+    needs: [resolve_tag, security_preflight, integration_check, scan_debian, scan_alpine, scan_ubuntu]
     if: |
       always() &&
       needs.resolve_tag.result == 'success' &&
       needs.integration_check.result == 'success' &&
       (needs.scan_debian.result == 'success' || needs.scan_debian.result == 'skipped') &&
       (needs.scan_alpine.result == 'success' || needs.scan_alpine.result == 'skipped') &&
-      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped')
+      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped') &&
+      (needs.security_preflight.result == 'success' || needs.security_preflight.result == 'skipped')
     runs-on: ubuntu-latest
     environment: release
     timeout-minutes: 90
@@ -348,14 +428,15 @@ jobs:
           tags: ${{ steps.tags.outputs.value }}
 
   docker_buildx_alpine:
-    needs: [resolve_tag, integration_check, scan_debian, scan_alpine, scan_ubuntu]
+    needs: [resolve_tag, security_preflight, integration_check, scan_debian, scan_alpine, scan_ubuntu]
     if: |
       always() &&
       needs.resolve_tag.result == 'success' &&
       needs.integration_check.result == 'success' &&
       (needs.scan_debian.result == 'success' || needs.scan_debian.result == 'skipped') &&
       (needs.scan_alpine.result == 'success' || needs.scan_alpine.result == 'skipped') &&
-      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped')
+      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped') &&
+      (needs.security_preflight.result == 'success' || needs.security_preflight.result == 'skipped')
     runs-on: ubuntu-latest
     environment: release
     timeout-minutes: 45
@@ -411,14 +492,15 @@ jobs:
           tags: ${{ steps.tags.outputs.value }}
 
   docker_buildx_ubuntu:
-    needs: [resolve_tag, integration_check, scan_debian, scan_alpine, scan_ubuntu]
+    needs: [resolve_tag, security_preflight, integration_check, scan_debian, scan_alpine, scan_ubuntu]
     if: |
       always() &&
       needs.resolve_tag.result == 'success' &&
       needs.integration_check.result == 'success' &&
       (needs.scan_debian.result == 'success' || needs.scan_debian.result == 'skipped') &&
       (needs.scan_alpine.result == 'success' || needs.scan_alpine.result == 'skipped') &&
-      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped')
+      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped') &&
+      (needs.security_preflight.result == 'success' || needs.security_preflight.result == 'skipped')
     runs-on: ubuntu-latest
     environment: release
     timeout-minutes: 45
@@ -475,13 +557,14 @@ jobs:
 
   release_gate:
     name: "Release gate"
-    needs: [resolve_tag, integration_check, scan_debian, scan_alpine, scan_ubuntu, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
+    needs: [resolve_tag, security_preflight, integration_check, scan_debian, scan_alpine, scan_ubuntu, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Log all job results
         run: |
           echo "resolve_tag:          ${{ needs.resolve_tag.result }}"
+          echo "security_preflight:   ${{ needs.security_preflight.result }}"
           echo "integration_check:    ${{ needs.integration_check.result }}"
           echo "scan_debian:          ${{ needs.scan_debian.result }}"
           echo "scan_alpine:          ${{ needs.scan_alpine.result }}"
@@ -568,7 +651,7 @@ jobs:
   post_release_report:
     name: "Post-release vulnerability report"
     needs: [resolve_tag, github_release]
-    if: always() && needs.github_release.result == 'success' && needs.release_gate.result == 'success'
+    if: always() && needs.github_release.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       issues: write

@@ -32,7 +32,7 @@ jobs:
       - name: Get pinned nginx version from Dockerfile
         id: pinned
         run: |
-          PINNED=$(grep -m1 '^FROM nginx:' src/Dockerfile | sed 's/FROM nginx://')
+          PINNED=$(grep -m1 '^FROM nginx:' src/Dockerfile | sed 's/FROM nginx://; s/@sha256:[^ ]*//')
           echo "version=${PINNED}" >> $GITHUB_OUTPUT
           echo "Pinned nginx version: ${PINNED}"
 
@@ -51,8 +51,10 @@ jobs:
         if: steps.compare.outputs.up_to_date == 'false'
         run: |
           NEW="${{ steps.latest.outputs.version }}"
-          sed -i "s/^FROM nginx:.*/FROM nginx:${NEW}/" src/Dockerfile
-          sed -i "s/^FROM nginx:.*/FROM nginx:${NEW}-alpine/" src/Dockerfile-alpine
+          DIGEST=$(docker buildx imagetools inspect "nginx:${NEW}" --format '{{json .Manifest}}' | jq -r .digest)
+          ALPINE_DIGEST=$(docker buildx imagetools inspect "nginx:${NEW}-alpine" --format '{{json .Manifest}}' | jq -r .digest)
+          sed -i "s|^FROM nginx:.*|FROM nginx:${NEW}@${DIGEST}|" src/Dockerfile
+          sed -i "s|^FROM nginx:.*|FROM nginx:${NEW}-alpine@${ALPINE_DIGEST}|" src/Dockerfile-alpine
           sed -i "s/^ARG NGINX_VERSION=.*/ARG NGINX_VERSION=${NEW}/" src/Dockerfile-ubuntu
 
       - name: Open pull request
