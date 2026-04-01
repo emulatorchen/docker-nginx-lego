@@ -677,7 +677,8 @@ jobs:
               gh issue create --repo "$REPO" \
                 --title "$TITLE" \
                 --body "$BODY" \
-                --label security
+                --label security \
+                --label "severity:$(echo "$SEVERITY" | tr '[:upper:]' '[:lower:]')"
             fi
           done
 
