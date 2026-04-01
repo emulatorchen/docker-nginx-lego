@@ -111,6 +111,8 @@ jobs:
         run: |
           docker run -d \
             --name nginx-lego-test \
+            --dns 8.8.8.8 \
+            --dns 1.1.1.1 \
             -e CERTBOT_EMAIL=${{ secrets.CERTBOT_EMAIL }} \
             -e STAGING=1 \
             -e RENEWAL_INTERVAL=9999d \
