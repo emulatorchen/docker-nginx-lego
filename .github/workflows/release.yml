@@ -295,6 +295,14 @@ jobs:
     environment: release
     timeout-minutes: 90
     steps:
+      - name: Log dependency results
+        run: |
+          echo "resolve_tag:       ${{ needs.resolve_tag.result }}"
+          echo "integration_check: ${{ needs.integration_check.result }}"
+          echo "scan_debian:       ${{ needs.scan_debian.result }}"
+          echo "scan_alpine:       ${{ needs.scan_alpine.result }}"
+          echo "scan_ubuntu:       ${{ needs.scan_ubuntu.result }}"
+
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
@@ -352,6 +360,14 @@ jobs:
     environment: release
     timeout-minutes: 45
     steps:
+      - name: Log dependency results
+        run: |
+          echo "resolve_tag:       ${{ needs.resolve_tag.result }}"
+          echo "integration_check: ${{ needs.integration_check.result }}"
+          echo "scan_debian:       ${{ needs.scan_debian.result }}"
+          echo "scan_alpine:       ${{ needs.scan_alpine.result }}"
+          echo "scan_ubuntu:       ${{ needs.scan_ubuntu.result }}"
+
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
@@ -407,6 +423,14 @@ jobs:
     environment: release
     timeout-minutes: 45
     steps:
+      - name: Log dependency results
+        run: |
+          echo "resolve_tag:       ${{ needs.resolve_tag.result }}"
+          echo "integration_check: ${{ needs.integration_check.result }}"
+          echo "scan_debian:       ${{ needs.scan_debian.result }}"
+          echo "scan_alpine:       ${{ needs.scan_alpine.result }}"
+          echo "scan_ubuntu:       ${{ needs.scan_ubuntu.result }}"
+
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
@@ -449,8 +473,36 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.value }}
 
+  release_gate:
+    name: "Release gate"
+    needs: [resolve_tag, integration_check, scan_debian, scan_alpine, scan_ubuntu, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log all job results
+        run: |
+          echo "resolve_tag:          ${{ needs.resolve_tag.result }}"
+          echo "integration_check:    ${{ needs.integration_check.result }}"
+          echo "scan_debian:          ${{ needs.scan_debian.result }}"
+          echo "scan_alpine:          ${{ needs.scan_alpine.result }}"
+          echo "scan_ubuntu:          ${{ needs.scan_ubuntu.result }}"
+          echo "docker_buildx_debian: ${{ needs.docker_buildx_debian.result }}"
+          echo "docker_buildx_alpine: ${{ needs.docker_buildx_alpine.result }}"
+          echo "docker_buildx_ubuntu: ${{ needs.docker_buildx_ubuntu.result }}"
+      - name: Check all builds succeeded
+        run: |
+          if [ "${{ needs.resolve_tag.result }}"          != "success" ] || \
+             [ "${{ needs.docker_buildx_debian.result }}" != "success" ] || \
+             [ "${{ needs.docker_buildx_alpine.result }}" != "success" ] || \
+             [ "${{ needs.docker_buildx_ubuntu.result }}" != "success" ]; then
+            echo "Release blocked: one or more required jobs did not succeed"
+            exit 1
+          fi
+          echo "All required builds succeeded — proceeding to GitHub release"
+
   github_release:
-    needs: [resolve_tag, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
+    needs: [resolve_tag, release_gate]
+    if: needs.release_gate.result == 'success'
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -499,7 +551,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@e98e4d1628a5f3be2be7c231e50981aee98723ae # v4.0.0
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
@@ -516,6 +568,7 @@ jobs:
   post_release_report:
     name: "Post-release vulnerability report"
     needs: [resolve_tag, github_release]
+    if: always() && needs.github_release.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -630,7 +683,7 @@ jobs:
 
   cleanup:
     name: "Revert release on failure or cancellation"
-    needs: [resolve_tag, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
+    needs: [resolve_tag, release_gate, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
     if: failure() || cancelled()
     runs-on: ubuntu-latest
     environment: release
