@@ -31,7 +31,6 @@ on:
 permissions:
   contents: read
   security-events: write
-  pull-requests: write
 
 jobs:
   changes:
@@ -41,6 +40,8 @@ jobs:
       dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
@@ -56,10 +57,15 @@ jobs:
     if: needs.changes.outputs.workflows == 'true' || github.event_name != 'pull_request'
     name: "Workflow static analysis (zizmor)"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install zizmor v1.23.1
         run: |
@@ -163,10 +169,14 @@ jobs:
     if: needs.changes.outputs.workflows == 'true' || github.event_name != 'pull_request'
     name: "Workflow linting (actionlint)"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install actionlint v1.7.12
         run: |
@@ -191,10 +201,12 @@ jobs:
           # Run on PR branch
           actionlint .github/workflows/*.yml 2>/dev/null | sort > /tmp/pr_lint.txt || true
 
-          # Normalize: strip leading "file:line:col: " so line-number shifts from
-          # unrelated insertions don't cause pre-existing warnings to appear "new"
-          sed 's|^[^:]*:[0-9]*:[0-9]*: ||' /tmp/base_lint.txt | sort -u > /tmp/base_norm.txt
-          sed 's|^[^:]*:[0-9]*:[0-9]*: ||' /tmp/pr_lint.txt   | sort -u > /tmp/pr_norm.txt
+          # Normalize: keep only actual error lines (^.github/ prefix), strip file:line:col.
+          # Actionlint also emits context decoration lines ("190 |  run:", "    |  ^~~~")
+          # that must be discarded first — otherwise line-number shifts from unrelated
+          # insertions cause pre-existing warnings to appear "new".
+          grep '^\.github/' /tmp/base_lint.txt | sed 's|^[^:]*:[0-9]*:[0-9]*: ||' | sort -u > /tmp/base_norm.txt
+          grep '^\.github/' /tmp/pr_lint.txt   | sed 's|^[^:]*:[0-9]*:[0-9]*: ||' | sort -u > /tmp/pr_norm.txt
 
           NEW=$(comm -13 /tmp/base_norm.txt /tmp/pr_norm.txt | grep -v '^$' || true)
           PREEXIST=$(grep -v '^$' /tmp/pr_norm.txt || true)
@@ -260,10 +272,14 @@ jobs:
     if: needs.changes.outputs.dockerfiles == 'true' || github.event_name == 'workflow_dispatch'
     name: "lego binary signing check"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Detect lego version change
         id: lego_change
@@ -388,8 +404,10 @@ jobs:
           steps.lego_change.outputs.changed == 'true' &&
           steps.cosign_check.outputs.available == 'true' &&
           steps.cosign_verify.outputs.verified == 'false'
+        env:
+          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
         run: |
-          echo "cosign signature verification FAILED for lego v${{ steps.lego_change.outputs.pr_version }}"
+          echo "cosign signature verification FAILED for lego v${LEGO_VER}"
           exit 1
 
   workflow_security_status:
@@ -398,9 +416,13 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          if [ "${{ needs.zizmor.result }}"     = "failure" ] || \
-             [ "${{ needs.actionlint.result }}" = "failure" ] || \
-             [ "${{ needs.lego_signing.result }}" = "failure" ]; then
+      - env:
+          ZIZMOR_RESULT: ${{ needs.zizmor.result }}
+          ACTIONLINT_RESULT: ${{ needs.actionlint.result }}
+          LEGO_RESULT: ${{ needs.lego_signing.result }}
+        run: |
+          if [ "$ZIZMOR_RESULT"     = "failure" ] || \
+             [ "$ACTIONLINT_RESULT" = "failure" ] || \
+             [ "$LEGO_RESULT"       = "failure" ]; then
             exit 1
           fi
