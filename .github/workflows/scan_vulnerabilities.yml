@@ -251,7 +251,6 @@ jobs:
           GH_TOKEN: ${{ secrets.CVE_AUTOFIX_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          set -x
           # Conditions for auto-fix PR (all must be true):
           # 1. CVE severity is HIGH or CRITICAL
           # 2. A fixed version exists (not "unknown") on at least one affected image
@@ -377,7 +376,7 @@ jobs:
           write_os_pins() {
             local DOCKERFILE="$1" PM="$2" FIXES="$3"
             if [ -z "$FIXES" ]; then
-              grep -q "CVE security pins" "$DOCKERFILE" 2>/dev/null || return
+              grep -q "CVE security pins" "$DOCKERFILE" 2>/dev/null || return 0
               awk '/# --- CVE security pins \(auto-managed\)/{skip=1} /# --- end CVE security pins ---/{skip=0;next} !skip{print}' \
                 "$DOCKERFILE" > "${DOCKERFILE}.tmp" && mv "${DOCKERFILE}.tmp" "$DOCKERFILE"
               return
