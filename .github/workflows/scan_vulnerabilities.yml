@@ -251,6 +251,7 @@ jobs:
           GH_TOKEN: ${{ secrets.CVE_AUTOFIX_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
+          set -x
           # Conditions for auto-fix PR (all must be true):
           # 1. CVE severity is HIGH or CRITICAL
           # 2. A fixed version exists (not "unknown") on at least one affected image
