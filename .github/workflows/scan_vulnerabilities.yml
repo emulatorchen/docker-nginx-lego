@@ -439,8 +439,10 @@ jobs:
                   echo "RUN apk add --no-cache ${PKG_VER}"
                 } > "${TEST_DIR}/Dockerfile"
               fi
+              set +e
               BUILD_LOG=$(docker buildx build --platform "$PLATFORMS" "${TEST_DIR}" 2>&1)
               BUILD_OK=$?
+              set -e
               rm -rf "$TEST_DIR"
               if [ "$BUILD_OK" -eq 0 ]; then
                 VERIFIED="${VERIFIED} ${PKG_VER}"
@@ -491,8 +493,8 @@ jobs:
             RAW_VER=$(echo "$FIXABLE_NGINX" | grep -oE '\([^)]+\)' | head -1 | tr -d '()')
             NGINX_VER=$(echo "$RAW_VER" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
             if [ -n "$NGINX_VER" ]; then
-              sed -i "s|^FROM nginx:[0-9][0-9.]*$|FROM nginx:${NGINX_VER}|" src/Dockerfile
-              sed -i "s|^FROM nginx:[0-9][0-9.]*-alpine|FROM nginx:${NGINX_VER}-alpine|" \
+              sed -i "s|^FROM nginx:[^ ]*|FROM nginx:${NGINX_VER}|" src/Dockerfile
+              sed -i "s|^FROM nginx:[^ ]*-alpine[^ ]*|FROM nginx:${NGINX_VER}-alpine|" \
                 src/Dockerfile-alpine
             fi
           fi
