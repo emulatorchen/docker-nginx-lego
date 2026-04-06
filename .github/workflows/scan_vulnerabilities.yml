@@ -249,6 +249,7 @@ jobs:
       - name: Create auto-fix PR if applicable
         env:
           GH_TOKEN: ${{ secrets.CVE_AUTOFIX_TOKEN }}
+          GH_ISSUE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
           # Conditions for auto-fix PR (all must be true):
@@ -484,7 +485,7 @@ jobs:
             [ -z "$ISSUE_NUM" ] && continue
             COMMENT=$(printf '**Auto-fix blocked for `%s`:** package not available on all target platforms (`%s`) — pin skipped for this image variant.\n```\n%s\n```' \
               "$FAIL_PKG" "$FAIL_PLATFORMS" "$FAIL_MSG")
-            gh issue comment "$ISSUE_NUM" --repo "$REPO" --body "$COMMENT"
+            GH_TOKEN="$GH_ISSUE_TOKEN" gh issue comment "$ISSUE_NUM" --repo "$REPO" --body "$COMMENT"
           done
           rm -rf "$FAIL_DIR"
 
@@ -522,7 +523,7 @@ jobs:
                   TR_ISSUE=$(echo "$OPEN_ISSUES_AF" | jq -r --arg cve "$TR_CVE" \
                     '.[] | select(.title | contains($cve)) | .number' | head -1)
                   [ -z "$TR_ISSUE" ] && continue
-                  gh issue comment "$TR_ISSUE" --repo "$REPO" --body \
+                  GH_TOKEN="$GH_ISSUE_TOKEN" gh issue comment "$TR_ISSUE" --repo "$REPO" --body \
                     "**Auto-fix blocked:** ${TR_CVE} is in a Go module inside the lego binary (not an OS package). The only fix is a lego release that vendors the patched dependency. Lego is already at the latest release (\`${CURRENT_LEGO}\`) which still includes the vulnerable version. No action possible until lego upstream publishes a fix."
                 done
               fi
