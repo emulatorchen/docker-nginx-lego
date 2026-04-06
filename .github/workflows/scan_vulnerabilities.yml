@@ -249,6 +249,7 @@ jobs:
       - name: Create auto-fix PR if applicable
         env:
           GH_TOKEN: ${{ secrets.CVE_AUTOFIX_TOKEN }}
+          GH_ISSUE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
           # Conditions for auto-fix PR (all must be true):
@@ -376,7 +377,7 @@ jobs:
           write_os_pins() {
             local DOCKERFILE="$1" PM="$2" FIXES="$3"
             if [ -z "$FIXES" ]; then
-              grep -q "CVE security pins" "$DOCKERFILE" 2>/dev/null || return
+              grep -q "CVE security pins" "$DOCKERFILE" 2>/dev/null || return 0
               awk '/# --- CVE security pins \(auto-managed\)/{skip=1} /# --- end CVE security pins ---/{skip=0;next} !skip{print}' \
                 "$DOCKERFILE" > "${DOCKERFILE}.tmp" && mv "${DOCKERFILE}.tmp" "$DOCKERFILE"
               return
@@ -439,8 +440,10 @@ jobs:
                   echo "RUN apk add --no-cache ${PKG_VER}"
                 } > "${TEST_DIR}/Dockerfile"
               fi
+              set +e
               BUILD_LOG=$(docker buildx build --platform "$PLATFORMS" "${TEST_DIR}" 2>&1)
               BUILD_OK=$?
+              set -e
               rm -rf "$TEST_DIR"
               if [ "$BUILD_OK" -eq 0 ]; then
                 VERIFIED="${VERIFIED} ${PKG_VER}"
@@ -482,7 +485,7 @@ jobs:
             [ -z "$ISSUE_NUM" ] && continue
             COMMENT=$(printf '**Auto-fix blocked for `%s`:** package not available on all target platforms (`%s`) — pin skipped for this image variant.\n```\n%s\n```' \
               "$FAIL_PKG" "$FAIL_PLATFORMS" "$FAIL_MSG")
-            gh issue comment "$ISSUE_NUM" --repo "$REPO" --body "$COMMENT"
+            GH_TOKEN="$GH_ISSUE_TOKEN" gh issue comment "$ISSUE_NUM" --repo "$REPO" --body "$COMMENT"
           done
           rm -rf "$FAIL_DIR"
 
@@ -491,8 +494,8 @@ jobs:
             RAW_VER=$(echo "$FIXABLE_NGINX" | grep -oE '\([^)]+\)' | head -1 | tr -d '()')
             NGINX_VER=$(echo "$RAW_VER" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
             if [ -n "$NGINX_VER" ]; then
-              sed -i "s|^FROM nginx:[0-9][0-9.]*$|FROM nginx:${NGINX_VER}|" src/Dockerfile
-              sed -i "s|^FROM nginx:[0-9][0-9.]*-alpine|FROM nginx:${NGINX_VER}-alpine|" \
+              sed -i "s|^FROM nginx:[^ ]*|FROM nginx:${NGINX_VER}|" src/Dockerfile
+              sed -i "s|^FROM nginx:[^ ]*-alpine[^ ]*|FROM nginx:${NGINX_VER}-alpine|" \
                 src/Dockerfile-alpine
             fi
           fi
@@ -520,7 +523,7 @@ jobs:
                   TR_ISSUE=$(echo "$OPEN_ISSUES_AF" | jq -r --arg cve "$TR_CVE" \
                     '.[] | select(.title | contains($cve)) | .number' | head -1)
                   [ -z "$TR_ISSUE" ] && continue
-                  gh issue comment "$TR_ISSUE" --repo "$REPO" --body \
+                  GH_TOKEN="$GH_ISSUE_TOKEN" gh issue comment "$TR_ISSUE" --repo "$REPO" --body \
                     "**Auto-fix blocked:** ${TR_CVE} is in a Go module inside the lego binary (not an OS package). The only fix is a lego release that vendors the patched dependency. Lego is already at the latest release (\`${CURRENT_LEGO}\`) which still includes the vulnerable version. No action possible until lego upstream publishes a fix."
                 done
               fi
