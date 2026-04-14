@@ -63,9 +63,10 @@ RUN chmod +x -R /scripts && \
 
 # Create a volume to have persistent storage for the obtained certificates.
 
+
 # --- CVE security pins (auto-managed) ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpng16-16t64=1.6.48-1+deb13u4 \
+    libtiff6=4.7.0-3+deb13u2 \
     && rm -rf /var/lib/apt/lists/*
 # --- end CVE security pins ---
 

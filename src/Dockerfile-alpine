@@ -64,9 +64,6 @@ RUN chmod +x -R /scripts && \
 
 # Create a volume to have persistent storage for the obtained certificates.
 
-# --- CVE security pins (auto-managed) ---
-RUN apk add --no-cache libpng=1.6.56-r0
-# --- end CVE security pins ---
 
 VOLUME /etc/letsencrypt
 
