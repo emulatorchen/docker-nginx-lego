@@ -10,7 +10,7 @@ LABEL maintainer="emulatorchen"
 #   - Review COPY scripts/ and lines after it for nginx-layer changes.
 #   - Skip all certbot/Python changes — they are intentionally removed.
 
-ARG LEGO_VERSION=4.33.0
+ARG LEGO_VERSION=4.34.0
 ARG TARGETARCH
 ARG TARGETVARIANT
 
@@ -64,6 +64,10 @@ RUN chmod +x -R /scripts && \
 
 # Create a volume to have persistent storage for the obtained certificates.
 
+
+# --- CVE security pins (auto-managed) ---
+RUN apk add --no-cache musl-utils=1.2.5-r23 musl=1.2.5-r23 zlib=1.3.2-r0
+# --- end CVE security pins ---
 
 VOLUME /etc/letsencrypt
 
