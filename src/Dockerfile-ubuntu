@@ -10,7 +10,7 @@ LABEL maintainer="emulatorchen"
 # When merging lego version bumps: update ARG LEGO_VERSION below.
 # Skip all certbot/Python changes from upstream — they are intentionally removed.
 
-ARG NGINX_VERSION=1.29.7
+ARG NGINX_VERSION=1.30.0
 ARG LEGO_VERSION=4.34.0
 ARG TARGETARCH
 ARG TARGETVARIANT
