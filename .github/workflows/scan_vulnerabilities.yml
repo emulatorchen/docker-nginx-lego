@@ -36,32 +36,24 @@ jobs:
           push: false
           tags: scan-target:${{ matrix.variant }}
 
-      - name: Install Trivy v0.69.3
-        run: |
-          TRIVY_VERSION="0.69.3"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
-          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
-          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
-          sudo mv trivy /usr/local/bin/trivy
-          rm -f trivy_*
-
       - name: Scan ${{ matrix.variant }} image (JSON)
-        run: |
-          trivy image \
-            --format json \
-            --output trivy-${{ matrix.variant }}.json \
-            --ignorefile .trivyignore \
-            scan-target:${{ matrix.variant }}
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: scan-target:${{ matrix.variant }}
+          trivyignores: .trivyignore
+          format: json
+          output: trivy-${{ matrix.variant }}.json
+          exit-code: 0
 
       - name: Scan ${{ matrix.variant }} image (SARIF)
         if: always()
-        run: |
-          trivy image \
-            --format sarif \
-            --output trivy-${{ matrix.variant }}.sarif \
-            --ignorefile .trivyignore \
-            scan-target:${{ matrix.variant }}
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: scan-target:${{ matrix.variant }}
+          trivyignores: .trivyignore
+          format: sarif
+          output: trivy-${{ matrix.variant }}.sarif
+          exit-code: 0
 
       - name: Upload SARIF to GitHub Security tab
         if: always()

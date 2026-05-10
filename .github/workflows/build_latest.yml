@@ -64,25 +64,15 @@ jobs:
           push: false
           tags: scan-target:debian
 
-      - name: Install Trivy v0.69.3
-        run: |
-          TRIVY_VERSION="0.69.3"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
-          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
-          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
-          sudo mv trivy /usr/local/bin/trivy
-          rm -f trivy_*
-
       - name: Scan Debian image
-        run: |
-          trivy image \
-            --exit-code 0 \
-            --severity CRITICAL,HIGH \
-            --ignorefile .trivyignore \
-            --format sarif \
-            --output trivy-debian.sarif \
-            scan-target:debian
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: scan-target:debian
+          severity: CRITICAL,HIGH
+          trivyignores: .trivyignore
+          format: sarif
+          output: trivy-debian.sarif
+          exit-code: 0
 
       - name: Upload Debian SARIF
         if: always()
@@ -136,25 +126,15 @@ jobs:
           push: false
           tags: scan-target:alpine
 
-      - name: Install Trivy v0.69.3
-        run: |
-          TRIVY_VERSION="0.69.3"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
-          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
-          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
-          sudo mv trivy /usr/local/bin/trivy
-          rm -f trivy_*
-
       - name: Scan Alpine image
-        run: |
-          trivy image \
-            --exit-code 0 \
-            --severity CRITICAL,HIGH \
-            --ignorefile .trivyignore \
-            --format sarif \
-            --output trivy-alpine.sarif \
-            scan-target:alpine
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: scan-target:alpine
+          severity: CRITICAL,HIGH
+          trivyignores: .trivyignore
+          format: sarif
+          output: trivy-alpine.sarif
+          exit-code: 0
 
       - name: Upload Alpine SARIF
         if: always()
@@ -206,25 +186,15 @@ jobs:
           push: false
           tags: scan-target:ubuntu
 
-      - name: Install Trivy v0.69.3
-        run: |
-          TRIVY_VERSION="0.69.3"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
-          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
-          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
-          sudo mv trivy /usr/local/bin/trivy
-          rm -f trivy_*
-
       - name: Scan Ubuntu image
-        run: |
-          trivy image \
-            --exit-code 0 \
-            --severity CRITICAL,HIGH \
-            --ignorefile .trivyignore \
-            --format sarif \
-            --output trivy-ubuntu.sarif \
-            scan-target:ubuntu
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: scan-target:ubuntu
+          severity: CRITICAL,HIGH
+          trivyignores: .trivyignore
+          format: sarif
+          output: trivy-ubuntu.sarif
+          exit-code: 0
 
       - name: Upload Ubuntu SARIF
         if: always()

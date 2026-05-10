@@ -253,25 +253,15 @@ jobs:
           push: false
           tags: scan-target:debian
 
-      - name: Install Trivy v0.69.3
-        run: |
-          TRIVY_VERSION="0.69.3"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
-          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
-          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
-          sudo mv trivy /usr/local/bin/trivy
-          rm -f trivy_*
-
       - name: Scan Debian image (block on CRITICAL/HIGH)
-        run: |
-          trivy image \
-            --exit-code 1 \
-            --severity CRITICAL,HIGH \
-            --ignore-unfixed \
-            --ignorefile .trivyignore \
-            --format table \
-            scan-target:debian
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: scan-target:debian
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: table
+          exit-code: 1
 
   scan_alpine:
     name: "Scan Alpine image for vulnerabilities"
@@ -297,25 +287,15 @@ jobs:
           push: false
           tags: scan-target:alpine
 
-      - name: Install Trivy v0.69.3
-        run: |
-          TRIVY_VERSION="0.69.3"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
-          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
-          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
-          sudo mv trivy /usr/local/bin/trivy
-          rm -f trivy_*
-
       - name: Scan Alpine image (block on CRITICAL/HIGH)
-        run: |
-          trivy image \
-            --exit-code 1 \
-            --severity CRITICAL,HIGH \
-            --ignore-unfixed \
-            --ignorefile .trivyignore \
-            --format table \
-            scan-target:alpine
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: scan-target:alpine
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: table
+          exit-code: 1
 
   scan_ubuntu:
     name: "Scan Ubuntu image for vulnerabilities"
@@ -341,25 +321,15 @@ jobs:
           push: false
           tags: scan-target:ubuntu
 
-      - name: Install Trivy v0.69.3
-        run: |
-          TRIVY_VERSION="0.69.3"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
-          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
-          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
-          sudo mv trivy /usr/local/bin/trivy
-          rm -f trivy_*
-
       - name: Scan Ubuntu image (block on CRITICAL/HIGH)
-        run: |
-          trivy image \
-            --exit-code 1 \
-            --severity CRITICAL,HIGH \
-            --ignore-unfixed \
-            --ignorefile .trivyignore \
-            --format table \
-            scan-target:ubuntu
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: scan-target:ubuntu
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: table
+          exit-code: 1
 
   docker_buildx_debian:
     needs: [resolve_tag, security_preflight, integration_check, scan_debian, scan_alpine, scan_ubuntu]
@@ -660,22 +630,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install Trivy v0.69.3
-        run: |
-          TRIVY_VERSION="0.69.3"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          curl -sLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
-          sha256sum --ignore-missing -c "trivy_${TRIVY_VERSION}_checksums.txt"
-          tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
-          sudo mv trivy /usr/local/bin/trivy
-          rm -f trivy_*
+      - name: Scan Debian released image
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: emulator/docker-nginx-lego:latest
+          trivyignores: .trivyignore
+          format: json
+          output: trivy-debian.json
+          exit-code: 0
 
-      - name: Scan released images
-        run: |
-          BASE="emulator/docker-nginx-lego"
-          trivy image --ignorefile .trivyignore --format json --output trivy-debian.json  "${BASE}:latest"
-          trivy image --ignorefile .trivyignore --format json --output trivy-alpine.json  "${BASE}:latest-alpine"
-          trivy image --ignorefile .trivyignore --format json --output trivy-ubuntu.json  "${BASE}:latest-ubuntu"
+      - name: Scan Alpine released image
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: emulator/docker-nginx-lego:latest-alpine
+          trivyignores: .trivyignore
+          format: json
+          output: trivy-alpine.json
+          exit-code: 0
+
+      - name: Scan Ubuntu released image
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: emulator/docker-nginx-lego:latest-ubuntu
+          trivyignores: .trivyignore
+          format: json
+          output: trivy-ubuntu.json
+          exit-code: 0
 
       - name: Build step summary
         if: always()

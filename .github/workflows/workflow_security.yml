@@ -375,22 +375,26 @@ jobs:
         run: |
           VER="${LEGO_VER}"
 
+          if [ "$AVAILABLE" != "true" ]; then
+            echo "cosign artifacts not available for lego v${VER} — skipping PR comment"
+            CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
+              --jq '.[] | select(.body | startswith("<!-- workflow-security-lego -->")) | .id' \
+              2>/dev/null | head -1 || true)
+            if [ -n "$CID" ]; then
+              echo "Deleting stale cosign comment (${CID})..."
+              gh api --method DELETE "repos/${REPO}/issues/comments/${CID}" >/dev/null
+            fi
+            exit 0
+          fi
+
           if [ "$CHANGED" = "true" ]; then
-            if [ "$AVAILABLE" = "true" ]; then
-              if [ "$VERIFIED" = "true" ]; then
-                STATUS="✅ cosign signature verified for lego v${VER}"
-              else
-                STATUS="❌ cosign signature **FAILED** for lego v${VER} — do not merge"
-              fi
+            if [ "$VERIFIED" = "true" ]; then
+              STATUS="✅ cosign signature verified for lego v${VER}"
             else
-              STATUS="⚠️ cosign artifacts not published for lego v${VER} (go-acme/lego does not yet sign releases). SHA256 checksum verification still runs at \`docker build\` time."
+              STATUS="❌ cosign signature **FAILED** for lego v${VER} — do not merge"
             fi
           else
-            if [ "$AVAILABLE" = "true" ] && [ "$VERIFIED" = "true" ]; then
-              STATUS="ℹ️ lego version unchanged (v${VER}). Informational cosign check: ✅ signature valid."
-            else
-              STATUS="ℹ️ lego version unchanged (v${VER}). Cosign artifacts not available — no signature check performed."
-            fi
+            STATUS="ℹ️ lego version unchanged (v${VER}). Informational cosign check: ✅ signature valid."
           fi
 
           BODY=$(printf '%s\n\n## lego Binary Signing Check\n\n%s\n' \
