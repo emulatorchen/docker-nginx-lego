@@ -10,7 +10,7 @@ LABEL maintainer="emulatorchen"
 #   - Review COPY scripts/ and lines after it for nginx-layer changes.
 #   - Skip all certbot/Python/Rust changes — they are intentionally removed.
 
-ARG LEGO_VERSION=4.33.0
+ARG LEGO_VERSION=4.34.0
 ARG TARGETARCH
 ARG TARGETVARIANT
 
@@ -62,10 +62,15 @@ RUN chmod +x -R /scripts && \
     sed -ri '/^if \[ "\$1" = "nginx" \] \|\| \[ "\$1" = "nginx-debug" \]; then$/,${s//if echo "$1" | grep -q "nginx"; then/;b};$q1' /docker-entrypoint.sh
 
 # Create a volume to have persistent storage for the obtained certificates.
+
+
+
+
+
+
 # --- CVE security pins (auto-managed) ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libc-bin=2.41-12+deb13u2 \
-    libc6=2.41-12+deb13u2 \
+    libtiff6=4.7.0-3+deb13u2 \
     && rm -rf /var/lib/apt/lists/*
 # --- end CVE security pins ---
 
