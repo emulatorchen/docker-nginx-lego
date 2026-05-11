@@ -11,7 +11,7 @@ LABEL maintainer="emulatorchen"
 # Skip all certbot/Python changes from upstream — they are intentionally removed.
 
 ARG NGINX_VERSION=1.29.7
-ARG LEGO_VERSION=4.34.0
+ARG LEGO_VERSION=4.35.2
 ARG TARGETARCH
 ARG TARGETVARIANT
 

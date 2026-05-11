@@ -10,7 +10,7 @@ LABEL maintainer="emulatorchen"
 #   - Review COPY scripts/ and lines after it for nginx-layer changes.
 #   - Skip all certbot/Python changes — they are intentionally removed.
 
-ARG LEGO_VERSION=4.34.0
+ARG LEGO_VERSION=4.35.2
 ARG TARGETARCH
 ARG TARGETVARIANT
 
