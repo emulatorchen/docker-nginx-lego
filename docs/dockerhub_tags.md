@@ -27,9 +27,9 @@ point to the latest nginx for that lego version, and move as updates are release
 
 | Lego    | Nginx  | Tag                              |
 | :------ | :----- | :------------------------------- |
-| 4.33.0  | 1.29.5 | `lego4.33.0-nginx1.29.5`         |
-|         |        | `lego4.33.0-nginx1.29.5-alpine`  |
-|         |        | `lego4.33.0-nginx1.29.5-ubuntu`  |
+| 5.0.4   | 1.31.0 | `lego5.0.4-nginx1.31.0`          |
+|         |        | `lego5.0.4-nginx1.31.0-alpine`   |
+|         |        | `lego5.0.4-nginx1.31.0-ubuntu`   |
 
 ## Architecture Support
 
