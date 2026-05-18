@@ -13,7 +13,7 @@ docker run -d -p 80:80 -p 443:443 \
   -e CERTBOT_EMAIL=your@email.com \
   -v $(pwd)/letsencrypt:/etc/letsencrypt \
   -v $(pwd)/user_conf.d:/etc/nginx/user_conf.d:ro \
-  emulator/docker-nginx-lego:lego4.33.0-nginx1.29.5
+  emulator/docker-nginx-lego:lego5.0.4-nginx1.31.0
 ```
 
 Place your nginx server configs in `user_conf.d/`. The container handles cert
