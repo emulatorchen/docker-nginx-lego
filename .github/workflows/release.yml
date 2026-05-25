@@ -745,12 +745,11 @@ jobs:
             fi
           done
 
-  cleanup:
-    name: "Revert release on failure or cancellation"
+  cleanup_git:
+    name: "Delete git tag on failure or cancellation"
     needs: [resolve_tag, release_gate, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
     if: failure() || cancelled()
     runs-on: ubuntu-latest
-    environment: release
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -761,6 +760,13 @@ jobs:
           [ -z "$TAG" ] && { echo "No tag to delete"; exit 0; }
           git push origin --delete "$TAG" || echo "Tag $TAG not found or already deleted"
 
+  cleanup_dockerhub:
+    name: "Delete Docker Hub tags on failure or cancellation"
+    needs: [resolve_tag, release_gate, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
+    if: failure() || cancelled()
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
       - name: Delete Docker Hub tags
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
