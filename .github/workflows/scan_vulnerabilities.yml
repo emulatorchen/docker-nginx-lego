@@ -533,49 +533,39 @@ jobs:
           git commit -m "fix: auto-fix CVEs from vulnerability scan (${TODAY})"
           git push origin "$BRANCH"
 
-          PR_BODY="Auto-fix PR for CVEs detected in weekly vulnerability scan (${TODAY})."
-
+          PR_BODY_FILE=$(mktemp)
+          printf '%s\n' \
+            "Auto-fix PR for CVEs detected in weekly vulnerability scan (${TODAY})." \
+            > "$PR_BODY_FILE"
           if [ -n "$FIXABLE_NGINX" ]; then
-            NGINX_LIST=$(printf '%s\n' $FIXABLE_NGINX | \
-              sed 's/\([^(]*\)(\(.*\))/- `\1` → nginx `\2`/')
-            PR_BODY="${PR_BODY}
-
-**nginx CVEs fixed:**
-${NGINX_LIST}"
+            printf '\n**nginx CVEs fixed:**\n' >> "$PR_BODY_FILE"
+            printf '%s\n' $FIXABLE_NGINX \
+              | sed 's/\([^(]*\)(\(.*\))/- `\1` → nginx `\2`/' \
+              >> "$PR_BODY_FILE"
           fi
-
           if [ -n "$FIXABLE_LEGO" ]; then
-            LEGO_LIST=$(printf '%s\n' $FIXABLE_LEGO | \
-              sed 's/\([^(]*\)(\(.*\))/- `\1` → lego `\2`/')
-            PR_BODY="${PR_BODY}
-
-**lego CVEs fixed:**
-${LEGO_LIST}"
+            printf '\n**lego CVEs fixed:**\n' >> "$PR_BODY_FILE"
+            printf '%s\n' $FIXABLE_LEGO \
+              | sed 's/\([^(]*\)(\(.*\))/- `\1` → lego `\2`/' \
+              >> "$PR_BODY_FILE"
           fi
-
           if [ -n "$LEGO_TRANSITIVE_CVES" ]; then
-            PR_BODY="${PR_BODY}
-
-**lego transitive CVEs (gobinary):** ${LEGO_NOTE}"
+            printf '\n**lego transitive CVEs (gobinary):** %s\n' \
+              "$LEGO_NOTE" >> "$PR_BODY_FILE"
           fi
-
           if [ -n "$FIXABLE_OS_ITEMS" ]; then
-            OS_LIST=$(printf '%s\n' $FIXABLE_OS_ITEMS | \
-              sed 's/\([^(]*\)(\([^@]*\)@\([^=]*\)=\(.*\))/- `\1` — \2 (\3) → `\4`/')
-            PR_BODY="${PR_BODY}
-
-**OS package CVEs pinned:**
-${OS_LIST}"
+            printf '\n**OS package CVEs pinned:**\n' >> "$PR_BODY_FILE"
+            printf '%s\n' $FIXABLE_OS_ITEMS \
+              | sed 's/\([^(]*\)(\([^@]*\)@\([^=]*\)=\(.*\))/- `\1` — \2 (\3) → `\4`/' \
+              >> "$PR_BODY_FILE"
           fi
-
           if $NEEDS_CLEANUP; then
-            PR_BODY="${PR_BODY}
-
-**Stale OS package pins removed:** base image update resolved the CVE natively — hardcoded version pins are no longer needed."
+            printf '\n**Stale OS package pins removed:** base image update resolved the CVE natively — hardcoded version pins are no longer needed.\n' \
+              >> "$PR_BODY_FILE"
           fi
-
           gh pr create \
             --title "fix: auto-fix CVEs from vulnerability scan (${TODAY})" \
-            --body "$PR_BODY" \
+            --body "$(cat "$PR_BODY_FILE")" \
             --base master \
             --label security
+          rm -f "$PR_BODY_FILE"
