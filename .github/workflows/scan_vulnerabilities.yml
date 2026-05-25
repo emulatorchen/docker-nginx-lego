@@ -116,9 +116,10 @@ jobs:
             echo "$ALL_CVES" | grep -qx "$CVE_ID" && continue
             ISSUE_NUM=$(echo "$OPEN_ISSUES" | jq -r --arg cve "$CVE_ID" \
               '.[] | select(.title | contains($cve)) | .number' | head -1)
-            [ -n "$ISSUE_NUM" ] && \
+            if [ -n "$ISSUE_NUM" ]; then
               gh issue close "$ISSUE_NUM" --repo "$REPO" \
                 --comment "Resolved — ${CVE_ID} no longer detected in weekly scan (${TODAY})."
+            fi
           done
 
           # Close auto-fix PRs where all CVEs in the PR body are resolved
@@ -132,9 +133,10 @@ jobs:
               [ -z "$PR_CVE" ] && continue
               echo "$ALL_CVES" | grep -qx "$PR_CVE" && { ALL_RESOLVED=false; break; }
             done <<< "$PR_CVES"
-            $ALL_RESOLVED && \
+            if [ "$ALL_RESOLVED" = true ]; then
               gh pr close "$PR_NUM" --repo "$REPO" \
                 --comment "All CVEs in this PR are resolved — closing automatically (${TODAY})."
+            fi
           done
 
           if [ -z "$ALL_CVES" ]; then
@@ -532,22 +534,45 @@ jobs:
           git push origin "$BRANCH"
 
           PR_BODY="Auto-fix PR for CVEs detected in weekly vulnerability scan (${TODAY})."
-          [ -n "$FIXABLE_NGINX" ] && PR_BODY="${PR_BODY}
 
-          **nginx CVEs fixed:** ${FIXABLE_NGINX}"
-          [ -n "$FIXABLE_LEGO" ] && PR_BODY="${PR_BODY}
+          if [ -n "$FIXABLE_NGINX" ]; then
+            NGINX_LIST=$(printf '%s\n' $FIXABLE_NGINX | \
+              sed 's/\([^(]*\)(\(.*\))/- `\1` → nginx `\2`/')
+            PR_BODY="${PR_BODY}
 
-          **lego CVEs fixed:** ${FIXABLE_LEGO}"
-          [ -n "$LEGO_TRANSITIVE_CVES" ] && PR_BODY="${PR_BODY}
+**nginx CVEs fixed:**
+${NGINX_LIST}"
+          fi
 
-          **lego transitive CVEs (gobinary):** ${LEGO_NOTE}"
-          [ -n "$FIXABLE_OS_ITEMS" ] && PR_BODY="${PR_BODY}
+          if [ -n "$FIXABLE_LEGO" ]; then
+            LEGO_LIST=$(printf '%s\n' $FIXABLE_LEGO | \
+              sed 's/\([^(]*\)(\(.*\))/- `\1` → lego `\2`/')
+            PR_BODY="${PR_BODY}
 
-          **OS package CVEs pinned:** ${FIXABLE_OS_ITEMS}
-          Fix versions differ by package manager (apt vs apk) — each variant pinned to its own version."
-          $NEEDS_CLEANUP && PR_BODY="${PR_BODY}
+**lego CVEs fixed:**
+${LEGO_LIST}"
+          fi
 
-          **Stale OS package pins removed:** base image update resolved the CVE natively — hardcoded version pins are no longer needed."
+          if [ -n "$LEGO_TRANSITIVE_CVES" ]; then
+            PR_BODY="${PR_BODY}
+
+**lego transitive CVEs (gobinary):** ${LEGO_NOTE}"
+          fi
+
+          if [ -n "$FIXABLE_OS_ITEMS" ]; then
+            OS_LIST=$(printf '%s\n' $FIXABLE_OS_ITEMS | \
+              sed 's/\([^(]*\)(\([^@]*\)@\([^=]*\)=\(.*\))/- `\1` — \2 (\3) → `\4`/')
+            PR_BODY="${PR_BODY}
+
+**OS package CVEs pinned:**
+${OS_LIST}"
+          fi
+
+          if $NEEDS_CLEANUP; then
+            PR_BODY="${PR_BODY}
+
+**Stale OS package pins removed:** base image update resolved the CVE natively — hardcoded version pins are no longer needed."
+          fi
 
           gh pr create \
             --title "fix: auto-fix CVEs from vulnerability scan (${TODAY})" \
