@@ -186,7 +186,7 @@ get_certificate_lego() {
         # HTTP-01 challenge via lego webroot.
         # Must always specify --http.webroot — never use --http alone.
         info "Requesting a ${key_type} certificate for '${cert_name}' (http-01 via lego webroot)"
-        lego \
+        lego ${lego_subcmd} \
             --path       "${LEGO_PATH}" \
             --email      "${CERTBOT_EMAIL}" \
             --server     "${letsencrypt_url}" \
@@ -195,7 +195,7 @@ get_certificate_lego() {
             --key-type   "${key_type}" \
             --accept-tos \
             "${domain_args[@]}" \
-            ${lego_subcmd} "${lego_extra_args[@]}" || return 1
+            "${lego_extra_args[@]}" || return 1
     else
         # DNS-01 challenge.
         local provider="" creds_suffix=""
@@ -222,7 +222,7 @@ get_certificate_lego() {
         # (not from a .ini file) work without a creds file.
 
         info "Requesting a ${key_type} certificate for '${cert_name}' (dns-01 via lego/${dns_provider})"
-        env "${env_args[@]}" lego \
+        env "${env_args[@]}" lego ${lego_subcmd} \
             --path      "${LEGO_PATH}" \
             --email     "${CERTBOT_EMAIL}" \
             --server    "${letsencrypt_url}" \
@@ -230,7 +230,7 @@ get_certificate_lego() {
             --key-type  "${key_type}" \
             --accept-tos \
             "${domain_args[@]}" \
-            ${lego_subcmd} "${lego_extra_args[@]}" || return 1
+            "${lego_extra_args[@]}" || return 1
     fi
 
     # Symlink lego output into certbot-compatible live/<cert_name>/ layout
