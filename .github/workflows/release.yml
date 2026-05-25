@@ -745,12 +745,11 @@ jobs:
             fi
           done
 
-  cleanup:
-    name: "Revert release on failure or cancellation"
+  cleanup_git:
+    name: "Delete git tag on failure or cancellation"
     needs: [resolve_tag, release_gate, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
     if: failure() || cancelled()
     runs-on: ubuntu-latest
-    environment: release
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -761,6 +760,38 @@ jobs:
           [ -z "$TAG" ] && { echo "No tag to delete"; exit 0; }
           git push origin --delete "$TAG" || echo "Tag $TAG not found or already deleted"
 
+  cleanup_notice:
+    name: "Pending: approve to delete Docker Hub tags"
+    needs: [resolve_tag, cleanup_git]
+    if: always() && (needs.resolve_tag.result == 'success') && (needs.cleanup_git.result == 'success' || needs.cleanup_git.result == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain pending approval
+        run: |
+          L="${{ needs.resolve_tag.outputs.lego }}"
+          N="${{ needs.resolve_tag.outputs.nginx }}"
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Action required: approve Docker Hub tag deletion
+
+          The release failed or was cancelled. The git tag has already been deleted.
+
+          **The next approval step is to DELETE partially-pushed Docker Hub tags — it is NOT a new release attempt.**
+
+          Tags that will be deleted (if they exist):
+          - \`lego${L}-nginx${N}\`, \`lego${L}\`, \`latest\`
+          - \`lego${L}-nginx${N}-alpine\`, \`lego${L}-alpine\`, \`latest-alpine\`
+          - \`lego${L}-nginx${N}-ubuntu\`, \`lego${L}-ubuntu\`, \`latest-ubuntu\`
+
+          Click **Review deployments** → select **release** → **Approve and deploy** to proceed with deletion.
+          EOF
+
+  cleanup_dockerhub:
+    name: "⚠️ Approve to DELETE Docker Hub tags — NOT a release"
+    needs: [resolve_tag, cleanup_notice]
+    if: always() && (needs.resolve_tag.result == 'success') && (needs.cleanup_notice.result == 'success')
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
       - name: Delete Docker Hub tags
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
