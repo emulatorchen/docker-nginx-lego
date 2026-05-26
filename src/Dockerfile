@@ -69,13 +69,6 @@ RUN chmod +x -R /scripts && \
 
 
 
-# --- CVE security pins (auto-managed) ---
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libsystemd0=257.13-1~deb13u1 \
-    libtiff6=4.7.0-3+deb13u2 \
-    libudev1=257.13-1~deb13u1 \
-    && rm -rf /var/lib/apt/lists/*
-# --- end CVE security pins ---
 
 VOLUME /etc/letsencrypt
 
