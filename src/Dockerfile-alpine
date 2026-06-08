@@ -68,6 +68,10 @@ RUN chmod +x -R /scripts && \
 
 
 
+# --- CVE security pins (auto-managed) ---
+RUN apk add --no-cache libxml2=2.13.9-r1
+# --- end CVE security pins ---
+
 VOLUME /etc/letsencrypt
 
 # The Nginx parent Docker image already expose port 80, so we only need to add
