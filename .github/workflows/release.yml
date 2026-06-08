@@ -375,9 +375,15 @@ jobs:
           R="${{ needs.resolve_tag.outputs.revision }}"
           {
             echo 'value<<EOF'
-            [ -n "$R" ] && echo "${BASE}:lego${L}-nginx${N}-r${R}"
-            echo "${BASE}:lego${L}-nginx${N}"
-            echo "${BASE}:lego${L}"
+            if [ -n "$R" ]; then
+              # Revision rebuild: the base version tags are already published and
+              # immutable. Push only the new revision tag; latest still moves.
+              echo "${BASE}:lego${L}-nginx${N}-r${R}"
+            else
+              # First release of this version: publish the immutable version tags.
+              echo "${BASE}:lego${L}-nginx${N}"
+              echo "${BASE}:lego${L}"
+            fi
             echo "${BASE}:latest"
             echo 'EOF'
           } >> $GITHUB_OUTPUT
@@ -441,9 +447,15 @@ jobs:
           R="${{ needs.resolve_tag.outputs.revision }}"
           {
             echo 'value<<EOF'
-            [ -n "$R" ] && echo "${BASE}:lego${L}-nginx${N}-r${R}-alpine"
-            echo "${BASE}:lego${L}-nginx${N}-alpine"
-            echo "${BASE}:lego${L}-alpine"
+            if [ -n "$R" ]; then
+              # Revision rebuild: the base version tags are already published and
+              # immutable. Push only the new revision tag; latest still moves.
+              echo "${BASE}:lego${L}-nginx${N}-r${R}-alpine"
+            else
+              # First release of this version: publish the immutable version tags.
+              echo "${BASE}:lego${L}-nginx${N}-alpine"
+              echo "${BASE}:lego${L}-alpine"
+            fi
             echo "${BASE}:latest-alpine"
             echo 'EOF'
           } >> $GITHUB_OUTPUT
@@ -505,9 +517,15 @@ jobs:
           R="${{ needs.resolve_tag.outputs.revision }}"
           {
             echo 'value<<EOF'
-            [ -n "$R" ] && echo "${BASE}:lego${L}-nginx${N}-r${R}-ubuntu"
-            echo "${BASE}:lego${L}-nginx${N}-ubuntu"
-            echo "${BASE}:lego${L}-ubuntu"
+            if [ -n "$R" ]; then
+              # Revision rebuild: the base version tags are already published and
+              # immutable. Push only the new revision tag; latest still moves.
+              echo "${BASE}:lego${L}-nginx${N}-r${R}-ubuntu"
+            else
+              # First release of this version: publish the immutable version tags.
+              echo "${BASE}:lego${L}-nginx${N}-ubuntu"
+              echo "${BASE}:lego${L}-ubuntu"
+            fi
             echo "${BASE}:latest-ubuntu"
             echo 'EOF'
           } >> $GITHUB_OUTPUT
@@ -770,17 +788,24 @@ jobs:
         run: |
           L="${{ needs.resolve_tag.outputs.lego }}"
           N="${{ needs.resolve_tag.outputs.nginx }}"
+          R="${{ needs.resolve_tag.outputs.revision }}"
+          if [ -n "$R" ]; then
+            DELETE_LIST="- \`lego${L}-nginx${N}-r${R}\` (+ \`-alpine\`, \`-ubuntu\`)"
+          else
+            DELETE_LIST="- \`lego${L}-nginx${N}\`, \`lego${L}\` (+ \`-alpine\`, \`-ubuntu\`)"
+          fi
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ## Action required: approve Docker Hub tag deletion
 
           The release failed or was cancelled. The git tag has already been deleted.
 
-          **The next approval step is to DELETE partially-pushed Docker Hub tags — it is NOT a new release attempt.**
+          **The next approval step DELETEs only the tags this run pushed — it is NOT a new release attempt.**
 
           Tags that will be deleted (if they exist):
-          - \`lego${L}-nginx${N}\`, \`lego${L}\`, \`latest\`
-          - \`lego${L}-nginx${N}-alpine\`, \`lego${L}-alpine\`, \`latest-alpine\`
-          - \`lego${L}-nginx${N}-ubuntu\`, \`lego${L}-ubuntu\`, \`latest-ubuntu\`
+          ${DELETE_LIST}
+
+          The \`latest*\` pointers and any previously-released version tags are
+          **left untouched** — they belong to the last good release.
 
           Click **Review deployments** → select **release** → **Approve and deploy** to proceed with deletion.
           EOF
@@ -806,8 +831,19 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"username\":\"${DOCKERHUB_USERNAME}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
             | grep -o '"token":"[^"]*"' | sed 's/"token":"//;s/"//')
-          TAGS="lego${L}-nginx${N} lego${L} latest lego${L}-nginx${N}-alpine lego${L}-alpine latest-alpine lego${L}-nginx${N}-ubuntu lego${L}-ubuntu latest-ubuntu"
-          [ -n "$R" ] && TAGS="lego${L}-nginx${N}-r${R} lego${L}-nginx${N}-r${R}-alpine lego${L}-nginx${N}-r${R}-ubuntu ${TAGS}"
+          if [ -n "$R" ]; then
+            # Revision rebuild failed: only the new -r${R} tags belong to this run.
+            # The base/short version tags are immutable and owned by the prior
+            # release, so this run never pushed them — never delete them here.
+            TAGS="lego${L}-nginx${N}-r${R} lego${L}-nginx${N}-r${R}-alpine lego${L}-nginx${N}-r${R}-ubuntu"
+          else
+            # First release failed: delete the partially-pushed immutable version
+            # tags, otherwise a retry is permanently blocked by immutability.
+            TAGS="lego${L}-nginx${N} lego${L} lego${L}-nginx${N}-alpine lego${L}-alpine lego${L}-nginx${N}-ubuntu lego${L}-ubuntu"
+          fi
+          # latest* is the mutable production pointer; a failed run leaves it on
+          # the previous good image (or the next successful push overwrites it),
+          # so it is intentionally never deleted here.
           for TAG in $TAGS; do
             echo -n "Deleting ${BASE}:${TAG} ... "
             curl -s -o /dev/null -w "%{http_code}\n" -X DELETE \
