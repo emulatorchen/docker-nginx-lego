@@ -68,7 +68,7 @@ jobs:
 
       - name: Install zizmor v1.23.1
         run: |
-          curl -sLo zizmor.tar.gz \
+          curl -fsSL --retry 3 --retry-all-errors -o zizmor.tar.gz \
             "https://github.com/zizmorcore/zizmor/releases/download/v1.23.1/zizmor-x86_64-unknown-linux-gnu.tar.gz"
           echo "67a8df0a14352dd81882e14876653d097b99b0f4f6b6fe798edc0320cff27aff  zizmor.tar.gz" | sha256sum -c -
           tar xzf zizmor.tar.gz
@@ -179,7 +179,7 @@ jobs:
 
       - name: Install actionlint v1.7.12
         run: |
-          curl -sLo actionlint.tar.gz \
+          curl -fsSL --retry 3 --retry-all-errors -o actionlint.tar.gz \
             "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
           tar xzf actionlint.tar.gz actionlint
@@ -330,7 +330,7 @@ jobs:
       - name: Install cosign v3.0.5
         if: steps.cosign_check.outputs.available == 'true'
         run: |
-          curl -sLo cosign \
+          curl -fsSL --retry 3 --retry-all-errors -o cosign \
             "https://github.com/sigstore/cosign/releases/download/v3.0.5/cosign-linux-amd64"
           echo "db15cc99e6e4837daabab023742aaddc3841ce57f193d11b7c3e06c8003642b2  cosign" | sha256sum -c -
           sudo mv cosign /usr/local/bin/cosign
@@ -344,9 +344,9 @@ jobs:
         run: |
           VER="${LEGO_VER}"
           BASE="https://github.com/go-acme/lego/releases/download/v${VER}"
-          curl -sLo /tmp/lego_checksums.txt "${BASE}/lego_v${VER}_checksums.txt"
-          curl -sLo /tmp/lego_checksums.pem "${BASE}/lego_v${VER}_checksums.txt.pem"
-          curl -sLo /tmp/lego_checksums.sig "${BASE}/lego_v${VER}_checksums.txt.sig"
+          curl -fsSL --retry 3 --retry-all-errors -o /tmp/lego_checksums.txt "${BASE}/lego_v${VER}_checksums.txt"
+          curl -fsSL --retry 3 --retry-all-errors -o /tmp/lego_checksums.pem "${BASE}/lego_v${VER}_checksums.txt.pem"
+          curl -fsSL --retry 3 --retry-all-errors -o /tmp/lego_checksums.sig "${BASE}/lego_v${VER}_checksums.txt.sig"
 
           if cosign verify-blob \
             --certificate /tmp/lego_checksums.pem \
