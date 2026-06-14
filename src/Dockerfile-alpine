@@ -10,7 +10,7 @@ LABEL maintainer="emulatorchen"
 #   - Review COPY scripts/ and lines after it for nginx-layer changes.
 #   - Skip all certbot/Python changes — they are intentionally removed.
 
-ARG LEGO_VERSION=5.2.1
+ARG LEGO_VERSION=5.2.2
 ARG TARGETARCH
 ARG TARGETVARIANT
 
@@ -68,9 +68,6 @@ RUN chmod +x -R /scripts && \
 
 
 
-# --- CVE security pins (auto-managed) ---
-RUN apk add --no-cache libxml2=2.13.9-r1
-# --- end CVE security pins ---
 
 VOLUME /etc/letsencrypt
 
