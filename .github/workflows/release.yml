@@ -602,7 +602,7 @@ jobs:
           else
             generated=""
           fi
-          body="${{ inputs.notes }}"
+          body="$NOTES"
           [ -n "$generated" ] && body="${body}"$'\n\n'"${generated}"
           gh release create "${{ needs.resolve_tag.outputs.tag }}" \
               --title "${{ needs.resolve_tag.outputs.tag }}" \
@@ -610,16 +610,18 @@ jobs:
               --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES: ${{ inputs.notes }}
 
       - name: Create GitHub release (override notes)
         if: inputs.override_notes
         run: |
           gh release create "${{ needs.resolve_tag.outputs.tag }}" \
               --title "${{ needs.resolve_tag.outputs.tag }}" \
-              --notes "${{ inputs.notes }}" \
+              --notes "$NOTES" \
               --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES: ${{ inputs.notes }}
 
       - name: Update Docker Hub description
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
