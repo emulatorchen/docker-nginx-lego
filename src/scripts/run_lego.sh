@@ -174,13 +174,16 @@ get_certificate_lego() {
     local lego_certs_dir="${LEGO_PATH}/certificates"
     local lego_cert="${lego_certs_dir}/${lego_cert_name}.crt"
 
-    # Use 'run' for a new certificate, 'renew' for an existing one.
+    # lego 5.x has no 'renew' command — 'run' obtains a new certificate or
+    # renews an existing one. --renew-days sets the renewal window (lego skips
+    # the renewal if the cert is not yet within that many days of expiry).
+    # --ari-disable avoids ACME Renewal Info 'replaces' failures when a cert was
+    # originally issued by a different ACME account (e.g. a certbot->lego
+    # migration), where this account "did not request the certificate being
+    # replaced". (${lego_cert} existence is no longer used to pick the subcommand.)
     local lego_subcmd="run"
-    local lego_extra_args=()
-    if [ -f "${lego_cert}" ]; then
-        lego_subcmd="renew"
-        [ -n "${force_renew}" ] && lego_extra_args+=("${force_renew}")
-    fi
+    local lego_extra_args=("--renew-days" "${RENEW_DAYS:-30}" "--ari-disable")
+    [ -n "${force_renew}" ] && lego_extra_args+=("--renew-force")
 
     if [ "${authenticator}" = "webroot" ]; then
         # HTTP-01 challenge via lego webroot.
@@ -198,15 +201,22 @@ get_certificate_lego() {
             "${lego_extra_args[@]}" || return 1
     else
         # DNS-01 challenge.
-        local provider="" creds_suffix=""
+        local provider="" suffix=""
         get_cert_provider_and_suffix "${cert_name}"
         local dns_provider="${provider}"
+
+        # Cert names without a 'dns-<provider>' token (e.g. '777777-duckdns')
+        # leave the provider empty; fall back to the authenticator resolved
+        # above (from LEGO_DEFAULT_PROVIDER / CERTBOT_AUTHENTICATOR).
+        if [ -z "${dns_provider}" ]; then
+            dns_provider="${authenticator#dns-}"
+        fi
 
         # For legacy dns-multi, the actual lego provider is inside the .ini file.
         local -a env_args=()
         if [ -n "${dns_provider}" ]; then
             local creds_output
-            creds_output=$(load_credentials "${dns_provider}" "${creds_suffix}") || return 1
+            creds_output=$(load_credentials "${dns_provider}" "${suffix}") || return 1
 
             # Override provider if the .ini file specifies dns_multi_provider.
             while IFS= read -r creds_line; do

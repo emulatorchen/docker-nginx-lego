@@ -225,3 +225,66 @@ setup() {
     [ "${provider}" = "multi" ]
     [ "${suffix}" = "_2" ]
 }
+
+# ===========================================================================
+# get_certificate_lego() — lego 5.x command construction
+# A mock 'lego' on PATH captures argv + injected env, so these run in CI with
+# no network and no real issuance. Covers the lego-5.x correctness fixes:
+#   - 'run' subcommand (lego 5.x has no 'renew'); flags are run options (after it)
+#   - --renew-days (renewal window) + --ari-disable (cross-account ARI replace)
+#   - cert-name suffix reaches load_credentials (was dropped into 'creds_suffix')
+#   - names without a dns-<provider> token fall back to the authenticator
+# ===========================================================================
+
+_install_lego_mock() {
+    MOCK_BIN="$(mktemp -d)"
+    LEGO_ARGS_FILE="$(mktemp)"
+    cat > "${MOCK_BIN}/lego" <<LEGO_MOCK_EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "${LEGO_ARGS_FILE}"
+env | grep -E '_TOKEN=|_DNS_API_TOKEN=|DO_AUTH_TOKEN=' >> "${LEGO_ARGS_FILE}" || true
+exit 0
+LEGO_MOCK_EOF
+    chmod +x "${MOCK_BIN}/lego"
+    PATH="${MOCK_BIN}:${PATH}"
+}
+
+@test "get_certificate_lego: invokes 'run' (not 'renew') with flags after the subcommand" {
+    _install_lego_mock
+    run get_certificate_lego "example.com.dns-cloudflare" "example.com" "ecdsa"
+    [ "${status}" -eq 0 ]
+    # lego 5.x: subcommand first, its options after it.
+    [ "$(head -n1 "${LEGO_ARGS_FILE}")" = "run" ]
+    ! grep -qx "renew" "${LEGO_ARGS_FILE}"
+    grep -qx -- "--path" "${LEGO_ARGS_FILE}"
+    local run_line path_line
+    run_line=$(grep -nx "run" "${LEGO_ARGS_FILE}" | head -n1 | cut -d: -f1)
+    path_line=$(grep -nx -- "--path" "${LEGO_ARGS_FILE}" | head -n1 | cut -d: -f1)
+    [ "${path_line}" -gt "${run_line}" ]
+}
+
+@test "get_certificate_lego: includes --renew-days and --ari-disable" {
+    _install_lego_mock
+    run get_certificate_lego "example.com.dns-cloudflare" "example.com" "ecdsa"
+    [ "${status}" -eq 0 ]
+    grep -qx -- "--renew-days" "${LEGO_ARGS_FILE}"
+    grep -qx -- "--ari-disable" "${LEGO_ARGS_FILE}"
+}
+
+@test "get_certificate_lego: suffixed cert name loads the matching creds file (suffix not dropped)" {
+    _install_lego_mock
+    run get_certificate_lego "example.com.dns-cloudflare_1" "example.com" "ecdsa"
+    [ "${status}" -eq 0 ]
+    grep -q "CLOUDFLARE_DNS_API_TOKEN=test-token-cf-1" "${LEGO_ARGS_FILE}"
+}
+
+@test "get_certificate_lego: cert name without dns- token falls back to CERTBOT_AUTHENTICATOR provider" {
+    export CERTBOT_AUTHENTICATOR="dns-cloudflare"
+    _install_lego_mock
+    run get_certificate_lego "777777-duckdns" "mattermost.777777.duckdns.org" "ecdsa"
+    [ "${status}" -eq 0 ]
+    local dns_line
+    dns_line=$(grep -nx -- "--dns" "${LEGO_ARGS_FILE}" | head -n1 | cut -d: -f1)
+    [ -n "${dns_line}" ]
+    [ "$(sed -n "$((dns_line + 1))p" "${LEGO_ARGS_FILE}")" = "cloudflare" ]
+}
