@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Checkout the repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Run BATS tests
         uses: ffurrer2/bats-action@a9be970594050d0c1fac81f8d35ac92c387a9b9e # v1.1.0

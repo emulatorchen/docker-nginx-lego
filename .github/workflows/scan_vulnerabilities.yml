@@ -27,6 +27,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Build ${{ matrix.variant }} image for scanning
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
@@ -81,6 +83,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Download scan artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -530,6 +534,30 @@ jobs:
             echo "No Dockerfile changes to commit — skipping PR."
             exit 0
           fi
+
+          # Dedup across scan cycles: if an open security PR already proposes the
+          # exact same Dockerfile contents, don't open a duplicate. The CVE-ID
+          # dedup above is blind to fix types that emit no CVE ID in the body
+          # (lego version bumps, stale-pin removals), which otherwise produce a
+          # fresh identical PR on every scan.
+          for existing in $(gh pr list --repo "$REPO" --label security --state open \
+                            --json number --jq '.[].number'); do
+            ref=$(gh pr view "$existing" --repo "$REPO" --json headRefName --jq '.headRefName')
+            identical=true
+            for f in src/Dockerfile src/Dockerfile-alpine src/Dockerfile-ubuntu; do
+              remote=$(gh api "repos/${REPO}/contents/${f}?ref=${ref}" \
+                       --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true)
+              if [ "$remote" != "$(cat "$f")" ]; then
+                identical=false
+                break
+              fi
+            done
+            if [ "$identical" = true ]; then
+              echo "Open security PR #${existing} already proposes these exact changes — skipping."
+              exit 0
+            fi
+          done
+
           git commit -m "fix: auto-fix CVEs from vulnerability scan (${TODAY})"
           git push origin "$BRANCH"
 
