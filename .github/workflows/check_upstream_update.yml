@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Get last synced upstream ref
         id: synced
@@ -46,9 +48,10 @@ jobs:
 
       - name: Compare refs
         id: compare
+        env:
+          SYNCED: ${{ steps.synced.outputs.ref }}
+          LATEST: ${{ steps.upstream.outputs.tag }}
         run: |
-          SYNCED="${{ steps.synced.outputs.ref }}"
-          LATEST="${{ steps.upstream.outputs.tag }}"
           # Strip leading 'v' for semver comparison
           SYNCED_V=$(echo "$SYNCED" | sed 's/^v//')
           LATEST_V=$(echo "$LATEST" | sed 's/^v//')
@@ -66,8 +69,11 @@ jobs:
       - name: Check for existing open issue
         if: steps.compare.outputs.up_to_date == 'false'
         id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.upstream.outputs.tag }}
         run: |
-          TITLE="Upstream sync: ${{ steps.upstream.outputs.tag }} available"
+          TITLE="Upstream sync: ${TAG} available"
           EXISTS=$(gh issue list \
             --repo "$GITHUB_REPOSITORY" \
             --label "upstream-sync" \
@@ -77,12 +83,10 @@ jobs:
             | head -1)
           if [ -n "$EXISTS" ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Issue already open for ${{ steps.upstream.outputs.tag }}, skipping"
+            echo "Issue already open for ${TAG}, skipping"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create upstream-sync label if missing
         if: steps.compare.outputs.up_to_date == 'false' && steps.existing.outputs.exists == 'false'
