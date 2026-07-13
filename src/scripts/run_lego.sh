@@ -84,8 +84,8 @@ determine_authenticator() {
 # Handles both new-style and legacy patterns:
 #   example.com.dns-cloudflare       → provider=cloudflare  suffix=
 #   example.com.dns-cloudflare_1     → provider=cloudflare  suffix=_1
-#   lalatina-freemyip.dns-multi      → provider=multi       suffix=
-#   lalatina-freemyip.dns-multi_2    → provider=multi       suffix=_2
+#   example.com.dns-multi            → provider=multi       suffix=
+#   example.com.dns-multi_2          → provider=multi       suffix=_2
 get_cert_provider_and_suffix() {
     local cert_name="${1}"
     provider=""

@@ -64,12 +64,12 @@ setup() {
 }
 
 @test "determine_authenticator: cert name with .dns-multi → dns-multi" {
-    result=$(determine_authenticator "lalatina-freemyip.dns-multi")
+    result=$(determine_authenticator "example.com.dns-multi")
     [ "${result}" = "dns-multi" ]
 }
 
 @test "determine_authenticator: cert name with .dns-multi_2 → dns-multi (suffix stripped for auth)" {
-    result=$(determine_authenticator "lalatina-freemyip.dns-multi_2")
+    result=$(determine_authenticator "example.com.dns-multi_2")
     [ "${result}" = "dns-multi" ]
 }
 
@@ -214,14 +214,14 @@ setup() {
 
 @test "get_cert_provider_and_suffix: dns-multi → provider=multi suffix=''" {
     provider="" suffix=""
-    get_cert_provider_and_suffix "lalatina-freemyip.dns-multi"
+    get_cert_provider_and_suffix "example.com.dns-multi"
     [ "${provider}" = "multi" ]
     [ "${suffix}" = "" ]
 }
 
 @test "get_cert_provider_and_suffix: dns-multi_2 → provider=multi suffix=_2" {
     provider="" suffix=""
-    get_cert_provider_and_suffix "lalatina-freemyip.dns-multi_2"
+    get_cert_provider_and_suffix "example.com.dns-multi_2"
     [ "${provider}" = "multi" ]
     [ "${suffix}" = "_2" ]
 }
