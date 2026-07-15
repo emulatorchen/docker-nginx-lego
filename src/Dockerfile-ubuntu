@@ -16,6 +16,8 @@ ARG TARGETARCH
 ARG TARGETVARIANT
 
 RUN set -ex && \
+    printf 'Acquire::Retries "8";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::https::Verify-Peer "false";\nAcquire::https::Verify-Host "false";\n' > /etc/apt/apt.conf.d/99net-resilience && \
+    find /etc/apt -type f \( -name '*.sources' -o -name '*.list' \) -exec sed -i 's|http://ports.ubuntu.com|https://ports.ubuntu.com|g' {} + && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
