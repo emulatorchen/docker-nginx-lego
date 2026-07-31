@@ -10,7 +10,7 @@ LABEL maintainer="emulatorchen"
 #   - Review COPY scripts/ and lines after it for nginx-layer changes.
 #   - Skip all certbot/Python/Rust changes — they are intentionally removed.
 
-ARG LEGO_VERSION=5.2.2
+ARG LEGO_VERSION=5.3.1
 ARG TARGETARCH
 ARG TARGETVARIANT
 
@@ -69,6 +69,13 @@ RUN chmod +x -R /scripts && \
 
 
 
+
+# --- CVE security pins (auto-managed) ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libexpat1=2.8.2-1~deb13u1 \
+    libtiff6=4.7.0-3+deb13u3 \
+    && rm -rf /var/lib/apt/lists/*
+# --- end CVE security pins ---
 
 VOLUME /etc/letsencrypt
 
