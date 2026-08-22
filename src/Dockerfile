@@ -63,20 +63,6 @@ RUN chmod +x -R /scripts && \
 
 # Create a volume to have persistent storage for the obtained certificates.
 
-
-
-
-# --- CVE security pins (auto-managed) ---
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libaom3=3.12.1-1+deb13u1 \
-    libexpat1=2.8.2-1+deb13u2 \
-    libheif-plugin-dav1d=1.19.8-1+deb13u1 \
-    libheif-plugin-libde265=1.19.8-1+deb13u1 \
-    libheif1=1.19.8-1+deb13u1 \
-    libtiff6=4.7.0-3+deb13u3 \
-    && rm -rf /var/lib/apt/lists/*
-# --- end CVE security pins ---
-
 VOLUME /etc/letsencrypt
 
 # The Nginx parent Docker image already expose port 80, so we only need to add
