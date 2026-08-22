@@ -66,15 +66,10 @@ RUN chmod +x -R /scripts && \
 
 
 
-
-
-
-
-
 # --- CVE security pins (auto-managed) ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libaom3=3.12.1-1+deb13u1 \
-    libexpat1=2.8.2-1~deb13u1 \
+    libexpat1=2.8.2-1+deb13u2 \
     libheif-plugin-dav1d=1.19.8-1+deb13u1 \
     libheif-plugin-libde265=1.19.8-1+deb13u1 \
     libheif1=1.19.8-1+deb13u1 \
