@@ -101,20 +101,26 @@ jobs:
 
       - name: Open tracking issue
         if: steps.compare.outputs.up_to_date == 'false' && steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+          URL: ${{ steps.upstream.outputs.url }}
+          DATE: ${{ steps.upstream.outputs.date }}
+          SYNCED: ${{ steps.synced.outputs.ref }}
         run: |
-          gh issue create \
-            --repo "$GITHUB_REPOSITORY" \
-            --label "upstream-sync" \
-            --title "Upstream sync: ${{ steps.upstream.outputs.tag }} available" \
-            --body "$(cat <<'BODY'
+          # The tag, url and date come from the upstream repository, and a git tag may
+          # contain shell metacharacters, so they reach this script as environment
+          # variables. The body keeps its quoted heredoc (its markdown is full of
+          # backticks) and the values go in afterwards, as text bash does not re-read.
+          BODY=$(cat <<'BODY'
           ## Upstream has a new release
 
           | | |
           |---|---|
           | **Upstream repo** | [JonasAlfredsson/docker-nginx-certbot](https://github.com/JonasAlfredsson/docker-nginx-certbot) |
-          | **New tag** | [${{ steps.upstream.outputs.tag }}](${{ steps.upstream.outputs.url }}) |
-          | **Released** | ${{ steps.upstream.outputs.date }} |
-          | **Last synced** | `${{ steps.synced.outputs.ref }}` |
+          | **New tag** | [@@TAG@@](@@URL@@) |
+          | **Released** | @@DATE@@ |
+          | **Last synced** | `@@SYNCED@@` |
 
           ## What to review
 
@@ -137,17 +143,24 @@ jobs:
 
           ## How to close this issue
 
-          Once the sync is complete, update `.upstream-sync-ref` to `${{ steps.upstream.outputs.tag }}` and close this issue:
+          Once the sync is complete, update `.upstream-sync-ref` to `@@TAG@@` and close this issue:
 
           ```bash
-          echo "${{ steps.upstream.outputs.tag }}" > .upstream-sync-ref
+          echo "@@TAG@@" > .upstream-sync-ref
           git add .upstream-sync-ref
-          git commit -m "sync: record upstream ${{ steps.upstream.outputs.tag }}"
+          git commit -m "sync: record upstream @@TAG@@"
           ```
 
           ---
           *Opened automatically by the `check-upstream-update` workflow.*
           BODY
-          )"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          )
+          BODY=${BODY//@@TAG@@/$TAG}
+          BODY=${BODY//@@URL@@/$URL}
+          BODY=${BODY//@@DATE@@/$DATE}
+          BODY=${BODY//@@SYNCED@@/$SYNCED}
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --label "upstream-sync" \
+            --title "Upstream sync: ${TAG} available" \
+            --body "$BODY"

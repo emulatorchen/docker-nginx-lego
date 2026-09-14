@@ -17,14 +17,13 @@ on:
         default: false
 
 permissions:
-  contents: write
-  security-events: write
-  issues: write
-  pull-requests: write
+  contents: read
 
 jobs:
   resolve_tag:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       lego: ${{ steps.resolve.outputs.lego }}
@@ -33,6 +32,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Resolve tag
         id: resolve
@@ -59,15 +60,21 @@ jobs:
           echo "Resolved tag: $tag"
 
       - name: Create and push tag
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git tag "${{ steps.resolve.outputs.tag }}"
-          git push origin "${{ steps.resolve.outputs.tag }}"
+          git tag "${TAG}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" "${TAG}"
 
   security_preflight:
     name: "Security preflight summary"
     needs: [resolve_tag]
     if: always() && needs.resolve_tag.result == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -101,14 +108,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh issue list --repo "${{ github.repository }}" \
+          gh issue list --repo "${GITHUB_REPOSITORY}" \
             --label security --state open \
             --json number,title \
             --jq '.[] | "  #\(.number): \(.title)"' > /tmp/security_issues.txt 2>/dev/null || true
 
       - name: Write step summary
+        env:
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
         run: |
-          TAG="${{ needs.resolve_tag.outputs.tag }}"
           {
             echo "## Security Preflight — ${TAG}"
             echo ""
@@ -148,6 +156,7 @@ jobs:
     name: "Integration test (DNS-01 staging cert)"
     needs: resolve_tag
     runs-on: ubuntu-latest
+    environment: automation
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -171,30 +180,36 @@ jobs:
         run: mkdir -p /tmp/lego-test-creds
 
       - name: Write FreeMyIP credentials
+        env:
+          FREEMYIP_TOKEN: ${{ secrets.FREEMYIP_TOKEN }}
         run: |
-          cat > /tmp/lego-test-creds/freemyip.ini << 'EOF'
-          FREEMYIP_TOKEN=${{ secrets.FREEMYIP_TOKEN }}
-          EOF
+          printf 'FREEMYIP_TOKEN=%s\n' "$FREEMYIP_TOKEN" > /tmp/lego-test-creds/freemyip.ini
 
       - name: Write FreeMyIP nginx config
+        env:
+          FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
+          FREEMYIP_DOMAIN: ${{ vars.FREEMYIP_DOMAIN }}
         run: |
           mkdir -p /tmp/lego-test-conf
           cat > /tmp/lego-test-conf/freemyip.conf << EOF
           server {
               listen 443 ssl;
-              server_name ${{ vars.FREEMYIP_DOMAIN }};
-              ssl_certificate     /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem;
-              ssl_certificate_key /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/privkey.pem;
+              server_name ${FREEMYIP_DOMAIN};
+              ssl_certificate     /etc/letsencrypt/live/${FREEMYIP_CERT_NAME}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/${FREEMYIP_CERT_NAME}/privkey.pem;
               location / { return 200 "ok"; add_header Content-Type text/plain; }
           }
           EOF
 
       - name: Run container and request staging cert
         id: run_container
+        env:
+          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
+          FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
         run: |
           docker run -d \
             --name nginx-lego-test \
-            -e CERTBOT_EMAIL=${{ secrets.CERTBOT_EMAIL }} \
+            -e CERTBOT_EMAIL="${CERTBOT_EMAIL}" \
             -e STAGING=1 \
             -e RENEWAL_INTERVAL=9999d \
             -e CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials \
@@ -206,7 +221,7 @@ jobs:
             docker-nginx-lego:integration-test
           for i in $(seq 1 18); do
             sleep 5
-            if docker exec nginx-lego-test test -f /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem 2>/dev/null; then
+            if docker exec nginx-lego-test test -f /etc/letsencrypt/live/"${FREEMYIP_CERT_NAME}"/fullchain.pem 2>/dev/null; then
               echo "cert_obtained=true" >> $GITHUB_OUTPUT
               break
             fi
@@ -214,8 +229,10 @@ jobs:
           done
 
       - name: Verify certificate obtained
+        env:
+          CERT_OBTAINED: ${{ steps.run_container.outputs.cert_obtained }}
         run: |
-          if [ "${{ steps.run_container.outputs.cert_obtained }}" != "true" ]; then
+          if [ "${CERT_OBTAINED}" != "true" ]; then
             echo "Certificate was not obtained within timeout"
             docker logs nginx-lego-test
             exit 1
@@ -356,12 +373,18 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Log dependency results
+        env:
+          INTEGRATION_CHECK_RESULT: ${{ needs.integration_check.result }}
+          RESOLVE_TAG_RESULT: ${{ needs.resolve_tag.result }}
+          SCAN_ALPINE_RESULT: ${{ needs.scan_alpine.result }}
+          SCAN_DEBIAN_RESULT: ${{ needs.scan_debian.result }}
+          SCAN_UBUNTU_RESULT: ${{ needs.scan_ubuntu.result }}
         run: |
-          echo "resolve_tag:       ${{ needs.resolve_tag.result }}"
-          echo "integration_check: ${{ needs.integration_check.result }}"
-          echo "scan_debian:       ${{ needs.scan_debian.result }}"
-          echo "scan_alpine:       ${{ needs.scan_alpine.result }}"
-          echo "scan_ubuntu:       ${{ needs.scan_ubuntu.result }}"
+          echo "resolve_tag:       ${RESOLVE_TAG_RESULT}"
+          echo "integration_check: ${INTEGRATION_CHECK_RESULT}"
+          echo "scan_debian:       ${SCAN_DEBIAN_RESULT}"
+          echo "scan_alpine:       ${SCAN_ALPINE_RESULT}"
+          echo "scan_ubuntu:       ${SCAN_UBUNTU_RESULT}"
 
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
@@ -378,11 +401,15 @@ jobs:
 
       - name: Compute Debian tags
         id: tags
+        env:
+          LEGO: ${{ needs.resolve_tag.outputs.lego }}
+          NGINX: ${{ needs.resolve_tag.outputs.nginx }}
+          REVISION: ${{ needs.resolve_tag.outputs.revision }}
         run: |
           BASE="emulator/docker-nginx-lego"
-          L="${{ needs.resolve_tag.outputs.lego }}"
-          N="${{ needs.resolve_tag.outputs.nginx }}"
-          R="${{ needs.resolve_tag.outputs.revision }}"
+          L="${LEGO}"
+          N="${NGINX}"
+          R="${REVISION}"
           {
             echo 'value<<EOF'
             if [ -n "$R" ]; then
@@ -428,12 +455,18 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Log dependency results
+        env:
+          INTEGRATION_CHECK_RESULT: ${{ needs.integration_check.result }}
+          RESOLVE_TAG_RESULT: ${{ needs.resolve_tag.result }}
+          SCAN_ALPINE_RESULT: ${{ needs.scan_alpine.result }}
+          SCAN_DEBIAN_RESULT: ${{ needs.scan_debian.result }}
+          SCAN_UBUNTU_RESULT: ${{ needs.scan_ubuntu.result }}
         run: |
-          echo "resolve_tag:       ${{ needs.resolve_tag.result }}"
-          echo "integration_check: ${{ needs.integration_check.result }}"
-          echo "scan_debian:       ${{ needs.scan_debian.result }}"
-          echo "scan_alpine:       ${{ needs.scan_alpine.result }}"
-          echo "scan_ubuntu:       ${{ needs.scan_ubuntu.result }}"
+          echo "resolve_tag:       ${RESOLVE_TAG_RESULT}"
+          echo "integration_check: ${INTEGRATION_CHECK_RESULT}"
+          echo "scan_debian:       ${SCAN_DEBIAN_RESULT}"
+          echo "scan_alpine:       ${SCAN_ALPINE_RESULT}"
+          echo "scan_ubuntu:       ${SCAN_UBUNTU_RESULT}"
 
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
@@ -450,11 +483,15 @@ jobs:
 
       - name: Compute Alpine tags
         id: tags
+        env:
+          LEGO: ${{ needs.resolve_tag.outputs.lego }}
+          NGINX: ${{ needs.resolve_tag.outputs.nginx }}
+          REVISION: ${{ needs.resolve_tag.outputs.revision }}
         run: |
           BASE="emulator/docker-nginx-lego"
-          L="${{ needs.resolve_tag.outputs.lego }}"
-          N="${{ needs.resolve_tag.outputs.nginx }}"
-          R="${{ needs.resolve_tag.outputs.revision }}"
+          L="${LEGO}"
+          N="${NGINX}"
+          R="${REVISION}"
           {
             echo 'value<<EOF'
             if [ -n "$R" ]; then
@@ -498,12 +535,18 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Log dependency results
+        env:
+          INTEGRATION_CHECK_RESULT: ${{ needs.integration_check.result }}
+          RESOLVE_TAG_RESULT: ${{ needs.resolve_tag.result }}
+          SCAN_ALPINE_RESULT: ${{ needs.scan_alpine.result }}
+          SCAN_DEBIAN_RESULT: ${{ needs.scan_debian.result }}
+          SCAN_UBUNTU_RESULT: ${{ needs.scan_ubuntu.result }}
         run: |
-          echo "resolve_tag:       ${{ needs.resolve_tag.result }}"
-          echo "integration_check: ${{ needs.integration_check.result }}"
-          echo "scan_debian:       ${{ needs.scan_debian.result }}"
-          echo "scan_alpine:       ${{ needs.scan_alpine.result }}"
-          echo "scan_ubuntu:       ${{ needs.scan_ubuntu.result }}"
+          echo "resolve_tag:       ${RESOLVE_TAG_RESULT}"
+          echo "integration_check: ${INTEGRATION_CHECK_RESULT}"
+          echo "scan_debian:       ${SCAN_DEBIAN_RESULT}"
+          echo "scan_alpine:       ${SCAN_ALPINE_RESULT}"
+          echo "scan_ubuntu:       ${SCAN_UBUNTU_RESULT}"
 
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
@@ -520,11 +563,15 @@ jobs:
 
       - name: Compute Ubuntu tags
         id: tags
+        env:
+          LEGO: ${{ needs.resolve_tag.outputs.lego }}
+          NGINX: ${{ needs.resolve_tag.outputs.nginx }}
+          REVISION: ${{ needs.resolve_tag.outputs.revision }}
         run: |
           BASE="emulator/docker-nginx-lego"
-          L="${{ needs.resolve_tag.outputs.lego }}"
-          N="${{ needs.resolve_tag.outputs.nginx }}"
-          R="${{ needs.resolve_tag.outputs.revision }}"
+          L="${LEGO}"
+          N="${NGINX}"
+          R="${REVISION}"
           {
             echo 'value<<EOF'
             if [ -n "$R" ]; then
@@ -560,22 +607,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Log all job results
+        env:
+          DOCKER_BUILDX_ALPINE_RESULT: ${{ needs.docker_buildx_alpine.result }}
+          DOCKER_BUILDX_DEBIAN_RESULT: ${{ needs.docker_buildx_debian.result }}
+          DOCKER_BUILDX_UBUNTU_RESULT: ${{ needs.docker_buildx_ubuntu.result }}
+          INTEGRATION_CHECK_RESULT: ${{ needs.integration_check.result }}
+          RESOLVE_TAG_RESULT: ${{ needs.resolve_tag.result }}
+          SCAN_ALPINE_RESULT: ${{ needs.scan_alpine.result }}
+          SCAN_DEBIAN_RESULT: ${{ needs.scan_debian.result }}
+          SCAN_UBUNTU_RESULT: ${{ needs.scan_ubuntu.result }}
+          SECURITY_PREFLIGHT_RESULT: ${{ needs.security_preflight.result }}
         run: |
-          echo "resolve_tag:          ${{ needs.resolve_tag.result }}"
-          echo "security_preflight:   ${{ needs.security_preflight.result }}"
-          echo "integration_check:    ${{ needs.integration_check.result }}"
-          echo "scan_debian:          ${{ needs.scan_debian.result }}"
-          echo "scan_alpine:          ${{ needs.scan_alpine.result }}"
-          echo "scan_ubuntu:          ${{ needs.scan_ubuntu.result }}"
-          echo "docker_buildx_debian: ${{ needs.docker_buildx_debian.result }}"
-          echo "docker_buildx_alpine: ${{ needs.docker_buildx_alpine.result }}"
-          echo "docker_buildx_ubuntu: ${{ needs.docker_buildx_ubuntu.result }}"
+          echo "resolve_tag:          ${RESOLVE_TAG_RESULT}"
+          echo "security_preflight:   ${SECURITY_PREFLIGHT_RESULT}"
+          echo "integration_check:    ${INTEGRATION_CHECK_RESULT}"
+          echo "scan_debian:          ${SCAN_DEBIAN_RESULT}"
+          echo "scan_alpine:          ${SCAN_ALPINE_RESULT}"
+          echo "scan_ubuntu:          ${SCAN_UBUNTU_RESULT}"
+          echo "docker_buildx_debian: ${DOCKER_BUILDX_DEBIAN_RESULT}"
+          echo "docker_buildx_alpine: ${DOCKER_BUILDX_ALPINE_RESULT}"
+          echo "docker_buildx_ubuntu: ${DOCKER_BUILDX_UBUNTU_RESULT}"
       - name: Check all builds succeeded
+        env:
+          DOCKER_BUILDX_ALPINE_RESULT: ${{ needs.docker_buildx_alpine.result }}
+          DOCKER_BUILDX_DEBIAN_RESULT: ${{ needs.docker_buildx_debian.result }}
+          DOCKER_BUILDX_UBUNTU_RESULT: ${{ needs.docker_buildx_ubuntu.result }}
+          RESOLVE_TAG_RESULT: ${{ needs.resolve_tag.result }}
         run: |
-          if [ "${{ needs.resolve_tag.result }}"          != "success" ] || \
-             [ "${{ needs.docker_buildx_debian.result }}" != "success" ] || \
-             [ "${{ needs.docker_buildx_alpine.result }}" != "success" ] || \
-             [ "${{ needs.docker_buildx_ubuntu.result }}" != "success" ]; then
+          if [ "${RESOLVE_TAG_RESULT}"          != "success" ] || \
+             [ "${DOCKER_BUILDX_DEBIAN_RESULT}" != "success" ] || \
+             [ "${DOCKER_BUILDX_ALPINE_RESULT}" != "success" ] || \
+             [ "${DOCKER_BUILDX_UBUNTU_RESULT}" != "success" ]; then
             echo "Release blocked: one or more required jobs did not succeed"
             exit 1
           fi
@@ -585,6 +647,8 @@ jobs:
     needs: [resolve_tag, release_gate]
     if: always() && needs.release_gate.result == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     environment: release
     steps:
       - name: Checkout
@@ -595,20 +659,21 @@ jobs:
       - name: Create GitHub release (auto-generated notes)
         if: inputs.notes == '' && !inputs.override_notes
         run: |
-          gh release create "${{ needs.resolve_tag.outputs.tag }}" \
-              --title "${{ needs.resolve_tag.outputs.tag }}" \
+          gh release create "${TAG}" \
+              --title "${TAG}" \
               --generate-notes \
               --latest
         env:
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub release (prepend custom notes)
         if: inputs.notes != '' && !inputs.override_notes
         run: |
-          prev_tag=$(git tag --sort=-creatordate | grep -v "^${{ needs.resolve_tag.outputs.tag }}$" | head -1)
+          prev_tag=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -1)
           if [ -n "$prev_tag" ]; then
-            generated=$(gh api repos/${{ github.repository }}/releases/generate-notes \
-              -f tag_name="${{ needs.resolve_tag.outputs.tag }}" \
+            generated=$(gh api repos/"${GITHUB_REPOSITORY}"/releases/generate-notes \
+              -f tag_name="${TAG}" \
               -f previous_tag_name="$prev_tag" \
               --jq '.body')
           else
@@ -616,22 +681,24 @@ jobs:
           fi
           body="$NOTES"
           [ -n "$generated" ] && body="${body}"$'\n\n'"${generated}"
-          gh release create "${{ needs.resolve_tag.outputs.tag }}" \
-              --title "${{ needs.resolve_tag.outputs.tag }}" \
+          gh release create "${TAG}" \
+              --title "${TAG}" \
               --notes "$body" \
               --latest
         env:
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NOTES: ${{ inputs.notes }}
 
       - name: Create GitHub release (override notes)
         if: inputs.override_notes
         run: |
-          gh release create "${{ needs.resolve_tag.outputs.tag }}" \
-              --title "${{ needs.resolve_tag.outputs.tag }}" \
+          gh release create "${TAG}" \
+              --title "${TAG}" \
               --notes "$NOTES" \
               --latest
         env:
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NOTES: ${{ inputs.notes }}
 
@@ -644,11 +711,13 @@ jobs:
           readme-filepath: ./docs/dockerhub_description.md
 
       - name: Summary
+        env:
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
         run: |
-          echo "### Released ${{ needs.resolve_tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Released ${TAG}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- [GitHub release](https://github.com/${{ github.repository }}/releases/tag/${{ needs.resolve_tag.outputs.tag }})" >> $GITHUB_STEP_SUMMARY
-          echo "- Docker Hub: \`emulator/docker-nginx-lego:${{ needs.resolve_tag.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- [GitHub release](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG})" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker Hub: \`emulator/docker-nginx-lego:${TAG}\`" >> $GITHUB_STEP_SUMMARY
 
   post_release_report:
     name: "Post-release vulnerability report"
@@ -656,6 +725,7 @@ jobs:
     if: always() && needs.github_release.result == 'success'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       security-events: write
     steps:
@@ -693,8 +763,9 @@ jobs:
 
       - name: Build step summary
         if: always()
+        env:
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
         run: |
-          TAG="${{ needs.resolve_tag.outputs.tag }}"
           echo "## Vulnerability Report — ${TAG}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           for VARIANT in debian alpine ubuntu; do
@@ -784,15 +855,22 @@ jobs:
     needs: [resolve_tag, release_gate, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
     if: failure() || cancelled()
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Delete git tag
+        env:
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ needs.resolve_tag.outputs.tag }}"
           [ -z "$TAG" ] && { echo "No tag to delete"; exit 0; }
-          git push origin --delete "$TAG" || echo "Tag $TAG not found or already deleted"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" \
+            --delete "$TAG" || echo "Tag $TAG not found or already deleted"
 
   cleanup_notice:
     name: "Pending: approve to delete Docker Hub tags"
@@ -801,10 +879,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Explain pending approval
+        env:
+          LEGO: ${{ needs.resolve_tag.outputs.lego }}
+          NGINX: ${{ needs.resolve_tag.outputs.nginx }}
+          REVISION: ${{ needs.resolve_tag.outputs.revision }}
         run: |
-          L="${{ needs.resolve_tag.outputs.lego }}"
-          N="${{ needs.resolve_tag.outputs.nginx }}"
-          R="${{ needs.resolve_tag.outputs.revision }}"
+          L="${LEGO}"
+          N="${NGINX}"
+          R="${REVISION}"
           if [ -n "$R" ]; then
             DELETE_LIST="- \`lego${L}-nginx${N}-r${R}\` (+ \`-alpine\`, \`-ubuntu\`)"
           else
@@ -835,12 +917,15 @@ jobs:
     steps:
       - name: Delete Docker Hub tags
         env:
+          LEGO: ${{ needs.resolve_tag.outputs.lego }}
+          NGINX: ${{ needs.resolve_tag.outputs.nginx }}
+          REVISION: ${{ needs.resolve_tag.outputs.revision }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
         run: |
-          L="${{ needs.resolve_tag.outputs.lego }}"
-          N="${{ needs.resolve_tag.outputs.nginx }}"
-          R="${{ needs.resolve_tag.outputs.revision }}"
+          L="${LEGO}"
+          N="${NGINX}"
+          R="${REVISION}"
           [ -z "$L" ] && { echo "No tag outputs available — nothing to clean up on Docker Hub"; exit 0; }
           BASE="emulator/docker-nginx-lego"
           token=$(curl -sf -X POST "https://hub.docker.com/v2/users/login" \

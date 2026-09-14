@@ -10,6 +10,7 @@ jobs:
   check_nginx_version:
     name: "Check for new nginx release"
     runs-on: ubuntu-latest
+    environment: automation
     permissions:
       contents: write
       pull-requests: write
