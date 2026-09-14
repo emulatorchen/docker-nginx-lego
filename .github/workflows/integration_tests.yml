@@ -43,15 +43,20 @@ jobs:
     if: needs.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
     name: "DNS-01 via FreeMyIP (staging)"
     runs-on: ubuntu-latest
+    environment: automation
     timeout-minutes: 30
     steps:
       - name: Check secrets and variables
         id: check
+        env:
+          FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
+          FREEMYIP_DOMAIN: ${{ vars.FREEMYIP_DOMAIN }}
+          FREEMYIP_TOKEN: ${{ secrets.FREEMYIP_TOKEN }}
         run: |
-          if [ -z "${{ secrets.FREEMYIP_TOKEN }}" ]; then
+          if [ -z "${FREEMYIP_TOKEN}" ]; then
             echo "Skipping: FREEMYIP_TOKEN secret is not configured (fork or external PR)"
             echo "skip=true" >> $GITHUB_OUTPUT
-          elif [ -z "${{ vars.FREEMYIP_DOMAIN }}" ] || [ -z "${{ vars.FREEMYIP_CERT_NAME }}" ]; then
+          elif [ -z "${FREEMYIP_DOMAIN}" ] || [ -z "${FREEMYIP_CERT_NAME}" ]; then
             echo "ERROR: FREEMYIP_TOKEN is set but domain variables are missing."
             echo "Set these in: Settings → Secrets and variables → Variables"
             echo "  FREEMYIP_DOMAIN     your freemyip subdomain, e.g. mysite.freemyip.com"
@@ -85,21 +90,24 @@ jobs:
 
       - name: Write FreeMyIP credentials
         if: steps.check.outputs.skip != 'true'
+        env:
+          FREEMYIP_TOKEN: ${{ secrets.FREEMYIP_TOKEN }}
         run: |
-          cat > /tmp/lego-test-creds/freemyip.ini << 'EOF'
-          FREEMYIP_TOKEN=${{ secrets.FREEMYIP_TOKEN }}
-          EOF
+          printf 'FREEMYIP_TOKEN=%s\n' "$FREEMYIP_TOKEN" > /tmp/lego-test-creds/freemyip.ini
 
       - name: Write FreeMyIP nginx config
         if: steps.check.outputs.skip != 'true'
+        env:
+          FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
+          FREEMYIP_DOMAIN: ${{ vars.FREEMYIP_DOMAIN }}
         run: |
           mkdir -p /tmp/lego-test-conf
           cat > /tmp/lego-test-conf/freemyip.conf << EOF
           server {
               listen 443 ssl;
-              server_name ${{ vars.FREEMYIP_DOMAIN }};
-              ssl_certificate     /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem;
-              ssl_certificate_key /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/privkey.pem;
+              server_name ${FREEMYIP_DOMAIN};
+              ssl_certificate     /etc/letsencrypt/live/${FREEMYIP_CERT_NAME}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/${FREEMYIP_CERT_NAME}/privkey.pem;
               location / { return 200 "ok"; add_header Content-Type text/plain; }
           }
           EOF
@@ -107,10 +115,13 @@ jobs:
       - name: Run container and request staging cert
         if: steps.check.outputs.skip != 'true'
         id: run_container
+        env:
+          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
+          FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
         run: |
           docker run -d \
             --name nginx-lego-test \
-            -e CERTBOT_EMAIL=${{ secrets.CERTBOT_EMAIL }} \
+            -e CERTBOT_EMAIL="${CERTBOT_EMAIL}" \
             -e STAGING=1 \
             -e RENEWAL_INTERVAL=9999d \
             -e CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials \
@@ -123,7 +134,7 @@ jobs:
           # Wait up to 90s for cert to appear
           for i in $(seq 1 18); do
             sleep 5
-            if docker exec nginx-lego-test test -f /etc/letsencrypt/live/${{ vars.FREEMYIP_CERT_NAME }}/fullchain.pem 2>/dev/null; then
+            if docker exec nginx-lego-test test -f /etc/letsencrypt/live/"${FREEMYIP_CERT_NAME}"/fullchain.pem 2>/dev/null; then
               echo "cert_obtained=true" >> $GITHUB_OUTPUT
               break
             fi
@@ -132,8 +143,10 @@ jobs:
 
       - name: Verify certificate file exists
         if: steps.check.outputs.skip != 'true'
+        env:
+          CERT_OBTAINED: ${{ steps.run_container.outputs.cert_obtained }}
         run: |
-          if [ "${{ steps.run_container.outputs.cert_obtained }}" != "true" ]; then
+          if [ "${CERT_OBTAINED}" != "true" ]; then
             echo "Certificate was not obtained within timeout"
             docker logs nginx-lego-test
             exit 1
@@ -158,6 +171,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          if [ "${{ needs.integration_freemyip.result }}" = "failure" ]; then
+          if [ "${INTEGRATION_FREEMYIP_RESULT}" = "failure" ]; then
             exit 1
           fi
+        env:
+          INTEGRATION_FREEMYIP_RESULT: ${{ needs.integration_freemyip.result }}

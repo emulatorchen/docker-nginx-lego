@@ -7,13 +7,14 @@ on:
 
 permissions:
   contents: read
-  security-events: write
-  issues: write
 
 jobs:
   scan:
     name: "Scan ${{ matrix.variant }} image"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -78,6 +79,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     steps:
@@ -239,11 +241,16 @@ jobs:
     needs: triage
     if: always() && needs.triage.result == 'success'
     runs-on: ubuntu-latest
+    environment: automation
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           token: ${{ secrets.CVE_AUTOFIX_TOKEN }}
+          persist-credentials: false
 
       - name: Set up QEMU for multi-arch pin verification
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
@@ -750,7 +757,7 @@ jobs:
           done
 
           git commit -m "fix: auto-fix CVEs from vulnerability scan (${TODAY})"
-          git push origin "$BRANCH"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" "$BRANCH"
 
           PR_BODY_FILE=$(mktemp)
           printf '%s\n' \
