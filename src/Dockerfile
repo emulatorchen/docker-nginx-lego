@@ -67,6 +67,7 @@ RUN chmod +x -R /scripts && \
 # Each pin is a minimum source version: install the candidate, then check it.
 RUN set -- \
         'bsdutils>=2.41.5-0+deb13u1' \
+        'gzip>=1.13-1+deb13u1' \
         'libaom3>=3.12.1-1+deb13u1' \
         'libblkid1>=2.41.5-0+deb13u1' \
         'libde265-0>=1.0.15-1+deb13u2' \
@@ -76,11 +77,14 @@ RUN set -- \
         'libheif1>=1.19.8-1+deb13u1' \
         'liblastlog2-2>=2.41.5-0+deb13u1' \
         'libmount1>=2.41.5-0+deb13u1' \
+        'libpcre2-8-0>=10.46-1~deb13u2' \
         'libsmartcols1>=2.41.5-0+deb13u1' \
+        'libsqlite3-0>=3.46.1-7+deb13u2' \
         'libtiff6>=4.7.0-3+deb13u3' \
         'libuuid1>=2.41.5-0+deb13u1' \
         'login>=2.41.5-0+deb13u1' \
         'mount>=2.41.5-0+deb13u1' \
+        'perl-base>=5.40.1-6+deb13u1' \
         'util-linux>=2.41.5-0+deb13u1' \
     && apt-get update \
     && apt-get install -y --no-install-recommends $(for pin; do echo "${pin%%>=*}"; done) \
