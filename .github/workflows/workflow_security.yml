@@ -31,18 +31,24 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       workflows: ${{ steps.filter.outputs.workflows }}
       dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
@@ -61,7 +67,7 @@ jobs:
       security-events: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -147,9 +153,12 @@ jobs:
           } > /tmp/zizmor_body.txt
           BODY=$(cat /tmp/zizmor_body.txt)
 
-          CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
-            --jq '.[] | select(.body | startswith("<!-- workflow-security-zizmor -->")) | .id' \
-            2>/dev/null | head -1 || true)
+          # Exit status, not output: on an error gh prints the error body to stdout.
+          if CID=$(gh api "repos/${REPO}/issues/${PR}/comments" --jq '.[] | select(.body | startswith("<!-- workflow-security-zizmor -->")) | .id' 2>/dev/null); then
+            CID=$(printf '%s\n' "$CID" | head -1)
+          else
+            CID=""
+          fi
           if [ -n "$CID" ]; then
             gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" -f body="$BODY" >/dev/null
           else
@@ -172,7 +181,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -257,9 +266,12 @@ jobs:
           } > /tmp/actionlint_body.txt
           BODY=$(cat /tmp/actionlint_body.txt)
 
-          CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
-            --jq '.[] | select(.body | startswith("<!-- workflow-security-actionlint -->")) | .id' \
-            2>/dev/null | head -1 || true)
+          # Exit status, not output: on an error gh prints the error body to stdout.
+          if CID=$(gh api "repos/${REPO}/issues/${PR}/comments" --jq '.[] | select(.body | startswith("<!-- workflow-security-actionlint -->")) | .id' 2>/dev/null); then
+            CID=$(printf '%s\n' "$CID" | head -1)
+          else
+            CID=""
+          fi
           if [ -n "$CID" ]; then
             gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" -f body="$BODY" >/dev/null
           else
@@ -282,7 +294,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -377,9 +389,12 @@ jobs:
 
           if [ "$AVAILABLE" != "true" ]; then
             echo "cosign artifacts not available for lego v${VER} — skipping PR comment"
-            CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
-              --jq '.[] | select(.body | startswith("<!-- workflow-security-lego -->")) | .id' \
-              2>/dev/null | head -1 || true)
+            # Exit status, not output: on an error gh prints the error body to stdout.
+            if CID=$(gh api "repos/${REPO}/issues/${PR}/comments" --jq '.[] | select(.body | startswith("<!-- workflow-security-lego -->")) | .id' 2>/dev/null); then
+              CID=$(printf '%s\n' "$CID" | head -1)
+            else
+              CID=""
+            fi
             if [ -n "$CID" ]; then
               echo "Deleting stale cosign comment (${CID})..."
               gh api --method DELETE "repos/${REPO}/issues/comments/${CID}" >/dev/null
@@ -400,9 +415,12 @@ jobs:
           BODY=$(printf '%s\n\n## lego Binary Signing Check\n\n%s\n' \
             "<!-- workflow-security-lego -->" "$STATUS")
 
-          CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
-            --jq '.[] | select(.body | startswith("<!-- workflow-security-lego -->")) | .id' \
-            2>/dev/null | head -1 || true)
+          # Exit status, not output: on an error gh prints the error body to stdout.
+          if CID=$(gh api "repos/${REPO}/issues/${PR}/comments" --jq '.[] | select(.body | startswith("<!-- workflow-security-lego -->")) | .id' 2>/dev/null); then
+            CID=$(printf '%s\n' "$CID" | head -1)
+          else
+            CID=""
+          fi
           if [ -n "$CID" ]; then
             gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" -f body="$BODY" >/dev/null
           else
@@ -420,19 +438,64 @@ jobs:
           echo "cosign signature verification FAILED for lego v${LEGO_VER}"
           exit 1
 
+  # Our own hard rules, blocking on any breach: pins, approvals, per-job
+  # permissions, credentials only behind the approval, no called workflows,
+  # nothing pushed to the default branch. The same script gates each release.
+  # Runs on every change, not only workflow changes: scripts/ is part of what
+  # the release executes.
+  validate:
+    name: "Supply-chain rules"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint v1.7.12 and zizmor v1.23.1
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSL --retry 3 --retry-all-errors -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          mv actionlint "${RUNNER_TEMP}/bin/"
+          curl -fsSL --retry 3 --retry-all-errors -o zizmor.tar.gz \
+            "https://github.com/zizmorcore/zizmor/releases/download/v1.23.1/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "67a8df0a14352dd81882e14876653d097b99b0f4f6b6fe798edc0320cff27aff  zizmor.tar.gz" | sha256sum -c -
+          tar xzf zizmor.tar.gz
+          mv zizmor "${RUNNER_TEMP}/bin/"
+          rm -f actionlint.tar.gz zizmor.tar.gz
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+
+      # The pin-versus-tag check needs an authenticated gh; without it that
+      # check reports "skip" and a pin naming the wrong version passes.
+      - name: Check the rules
+        env:
+          BLOCK_SEVERITY: CRITICAL,HIGH
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/validate.sh
+
   workflow_security_status:
     name: "Workflow security status"
-    needs: [zizmor, actionlint, lego_signing]
+    needs: [zizmor, actionlint, lego_signing, validate]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - env:
           ZIZMOR_RESULT: ${{ needs.zizmor.result }}
           ACTIONLINT_RESULT: ${{ needs.actionlint.result }}
           LEGO_RESULT: ${{ needs.lego_signing.result }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
         run: |
           if [ "$ZIZMOR_RESULT"     = "failure" ] || \
              [ "$ACTIONLINT_RESULT" = "failure" ] || \
              [ "$LEGO_RESULT"       = "failure" ]; then
             exit 1
           fi
+          # Never skipped, so anything but success is a failure.
+          [ "$VALIDATE_RESULT" = "success" ] || exit 1
