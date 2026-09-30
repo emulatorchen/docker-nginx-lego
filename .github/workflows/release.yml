@@ -1,5 +1,30 @@
 name: "release"
 
+# Releases are started by a person, never by a ref appearing, and publish
+# nothing until one person approves them — once, before the first write.
+#
+# ORDER, and why. Docker Hub version tags matching the repository's immutability
+# rule (^lego[0-9].*-nginx[0-9]) can be neither overwritten nor deleted. So the
+# release is a transaction whose commit is those tags:
+#
+#   1. every variant is built and pushed BY DIGEST, with no tag at all
+#   2. the GitHub release and its git tag
+#   3. latest<sfx> and the short lego<L><sfx> tags (both movable)
+#   4. the Docker Hub page and the CVE issues
+#   5. COMMIT: the three version tags, created together, last
+#
+# A build that fails (an apt error on one platform, say) stops the release
+# before anything is named. Anything failing before step 5 is undone by the
+# rollback jobs at the end of this same run, behind their own approval.
+#
+# APPROVALS. The reviewer sits on release-approval, which holds no secrets. The
+# Docker Hub token sits on release, which has no reviewer, so one decision
+# covers the whole release instead of one prompt per job; nothing can reach
+# release except through the approval, which validate.sh checks. The Docker Hub
+# account password sits on dockerhub-metadata, read by one job.
+#
+# No job can approve its own deployment: GITHUB_TOKEN is not a reviewer. Never
+# store a reviewer's classic repo-scoped PAT as a secret here.
 on:
   workflow_dispatch:
     inputs:
@@ -12,39 +37,54 @@ on:
         type: boolean
         default: false
       skip_security_scan:
-        description: "Skip vulnerability scan gate (emergency hotfix — requires reviewer approval)"
+        description: "Skip vulnerability scan gate (emergency hotfix — still needs reviewer approval)"
         type: boolean
         default: false
+
+# A release must never race another, and must never be cancelled half-published.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  # Works the tag out and writes nothing. The git tag used to be pushed here,
+  # before any approval, so a rejected or failed run still left a public tag and
+  # used up a revision number. It now appears with the GitHub release, after the
+  # approval, and a failed run leaves nothing: the next run resolves the same tag.
   resolve_tag:
+    name: "Resolve tag"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       lego: ${{ steps.resolve.outputs.lego }}
       nginx: ${{ steps.resolve.outputs.nginx }}
       revision: ${{ steps.resolve.outputs.revision }}
+      hub_repo: ${{ steps.resolve.outputs.hub_repo }}
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Resolve tag
         id: resolve
+        env:
+          HUB_REPO: emulator/docker-nginx-lego
         run: |
+          set -euo pipefail
           lego=$(grep -m1 '^ARG LEGO_VERSION=' src/Dockerfile | cut -d= -f2)
           nginx=$(grep -m1 '^FROM nginx:' src/Dockerfile | sed 's/FROM nginx://; s/@sha256:[^ ]*//')
           base="lego${lego}-nginx${nginx}"
-
-          if git ls-remote --tags origin | grep -q "refs/tags/${base}$"; then
+          tags=$(git ls-remote --tags origin)
+          if printf '%s\n' "$tags" | grep -q "refs/tags/${base}$"; then
             rev=1
-            while git ls-remote --tags origin | grep -q "refs/tags/${base}-r${rev}$"; do
+            while printf '%s\n' "$tags" | grep -q "refs/tags/${base}-r${rev}$"; do
               rev=$((rev + 1))
             done
             tag="${base}-r${rev}"
@@ -52,23 +92,33 @@ jobs:
             tag="$base"
             rev=""
           fi
+          printf '%s' "$tag" | grep -qE '^lego[0-9][0-9A-Za-z.]*-nginx[0-9][0-9.]*(-r[0-9]+)?$' \
+            || { echo "::error::'${tag}' is not a release tag"; exit 1; }
 
-          echo "lego=$lego"       >> $GITHUB_OUTPUT
-          echo "nginx=$nginx"     >> $GITHUB_OUTPUT
-          echo "revision=$rev"    >> $GITHUB_OUTPUT
-          echo "tag=$tag"         >> $GITHUB_OUTPUT
-          echo "Resolved tag: $tag"
+          # Refuse a tag that is already published where it cannot be
+          # overwritten. Checked through the public API, before the reviewer is
+          # asked for anything. Only a clean 404 counts as "free".
+          for sfx in "" "-alpine" "-ubuntu"; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 --retry-all-errors --max-time 30 \
+              "https://hub.docker.com/v2/repositories/${HUB_REPO}/tags/${tag}${sfx}/" || echo "000")
+            case "$code" in
+              404) ;;
+              200) echo "::error::${HUB_REPO}:${tag}${sfx} already exists and is immutable. Its git tag is missing, so this is left over from an earlier release; add the git tag ${tag} to move on to the next revision."; exit 1 ;;
+              *)   echo "::error::could not determine whether ${HUB_REPO}:${tag}${sfx} exists (HTTP ${code}). Refusing to release blind."; exit 1 ;;
+            esac
+          done
 
-      - name: Create and push tag
-        env:
-          TAG: ${{ steps.resolve.outputs.tag }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git tag "${TAG}"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" "${TAG}"
+          {
+            echo "lego=${lego}"
+            echo "nginx=${nginx}"
+            echo "revision=${rev}"
+            echo "tag=${tag}"
+            echo "hub_repo=${HUB_REPO}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: ${tag}"
 
   security_preflight:
-    name: "Security preflight summary"
+    name: "Security preflight"
     needs: [resolve_tag]
     if: always() && needs.resolve_tag.result == 'success'
     runs-on: ubuntu-latest
@@ -77,7 +127,7 @@ jobs:
       issues: read
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -152,23 +202,32 @@ jobs:
             echo "_This preflight scan is informational only and never blocks the release._"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # FREEMYIP_TOKEN and CERTBOT_EMAIL are repository secrets on purpose, not
+  # environment secrets: this test has to pass BEFORE the reviewer is asked, so
+  # it cannot sit behind an approval, and neither secret can publish anything —
+  # the token writes one TXT record, the address registers with Let's Encrypt
+  # staging. zizmor's secrets-outside-env is silenced on exactly those lines.
   integration_check:
     name: "Integration test (DNS-01 staging cert)"
     needs: resolve_tag
     runs-on: ubuntu-latest
-    environment: automation
     timeout-minutes: 30
+    concurrency:
+      group: freemyip-dns
+      cancel-in-progress: false
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Build Debian image (amd64)
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./src
           file: ./src/Dockerfile
@@ -181,7 +240,7 @@ jobs:
 
       - name: Write FreeMyIP credentials
         env:
-          FREEMYIP_TOKEN: ${{ secrets.FREEMYIP_TOKEN }}
+          FREEMYIP_TOKEN: ${{ secrets.FREEMYIP_TOKEN }} # zizmor: ignore[secrets-outside-env] — see the note on this job
         run: |
           printf 'FREEMYIP_TOKEN=%s\n' "$FREEMYIP_TOKEN" > /tmp/lego-test-creds/freemyip.ini
 
@@ -204,7 +263,7 @@ jobs:
       - name: Run container and request staging cert
         id: run_container
         env:
-          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
+          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }} # zizmor: ignore[secrets-outside-env] — see the note on this job
           FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
         run: |
           docker run -d \
@@ -222,7 +281,7 @@ jobs:
           for i in $(seq 1 18); do
             sleep 5
             if docker exec nginx-lego-test test -f /etc/letsencrypt/live/"${FREEMYIP_CERT_NAME}"/fullchain.pem 2>/dev/null; then
-              echo "cert_obtained=true" >> $GITHUB_OUTPUT
+              echo "cert_obtained=true" >> "$GITHUB_OUTPUT"
               break
             fi
             echo "Waiting for cert... attempt $i/18"
@@ -255,18 +314,20 @@ jobs:
     needs: [resolve_tag, integration_check]
     if: ${{ !inputs.skip_security_scan }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Build Debian amd64 image for scanning
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./src
           file: ./src/Dockerfile
@@ -291,18 +352,20 @@ jobs:
     needs: [resolve_tag, integration_check]
     if: ${{ !inputs.skip_security_scan }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Build Alpine amd64 image for scanning
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./src
           file: ./src/Dockerfile-alpine
@@ -327,18 +390,20 @@ jobs:
     needs: [resolve_tag, integration_check]
     if: ${{ !inputs.skip_security_scan }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Build Ubuntu amd64 image for scanning
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./src
           file: ./src/Dockerfile-ubuntu
@@ -358,75 +423,191 @@ jobs:
           format: table
           exit-code: 1
 
-  docker_buildx_debian:
-    needs: [resolve_tag, security_preflight, integration_check, scan_debian, scan_alpine, scan_ubuntu]
-    if: |
-      always() &&
-      needs.resolve_tag.result == 'success' &&
-      needs.integration_check.result == 'success' &&
-      (needs.scan_debian.result == 'success' || needs.scan_debian.result == 'skipped') &&
-      (needs.scan_alpine.result == 'success' || needs.scan_alpine.result == 'skipped') &&
-      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped') &&
-      (needs.security_preflight.result == 'success' || needs.security_preflight.result == 'skipped')
+  # The workflows are part of the supply chain too: they hold the credentials
+  # and decide what gets published. Blocking, unlike the preflight above.
+  workflow_scan:
+    name: "Workflow security gate"
+    needs: resolve_tag
     runs-on: ubuntu-latest
-    environment: release
-    timeout-minutes: 90
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - name: Log dependency results
-        env:
-          INTEGRATION_CHECK_RESULT: ${{ needs.integration_check.result }}
-          RESOLVE_TAG_RESULT: ${{ needs.resolve_tag.result }}
-          SCAN_ALPINE_RESULT: ${{ needs.scan_alpine.result }}
-          SCAN_DEBIAN_RESULT: ${{ needs.scan_debian.result }}
-          SCAN_UBUNTU_RESULT: ${{ needs.scan_ubuntu.result }}
-        run: |
-          echo "resolve_tag:       ${RESOLVE_TAG_RESULT}"
-          echo "integration_check: ${INTEGRATION_CHECK_RESULT}"
-          echo "scan_debian:       ${SCAN_DEBIAN_RESULT}"
-          echo "scan_alpine:       ${SCAN_ALPINE_RESULT}"
-          echo "scan_ubuntu:       ${SCAN_UBUNTU_RESULT}"
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
+      - name: Install actionlint v1.7.12 and zizmor v1.23.1
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSL --retry 3 --retry-all-errors -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          mv actionlint "${RUNNER_TEMP}/bin/"
+          curl -fsSL --retry 3 --retry-all-errors -o zizmor.tar.gz \
+            "https://github.com/zizmorcore/zizmor/releases/download/v1.23.1/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "67a8df0a14352dd81882e14876653d097b99b0f4f6b6fe798edc0320cff27aff  zizmor.tar.gz" | sha256sum -c -
+          tar xzf zizmor.tar.gz
+          mv zizmor "${RUNNER_TEMP}/bin/"
+          rm -f actionlint.tar.gz zizmor.tar.gz
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+
+      - name: Scan the workflows
+        env:
+          BLOCK_SEVERITY: CRITICAL,HIGH
+          # Needed for the pin-versus-tag check.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/validate.sh
+
+  release_gate:
+    name: "Release gate"
+    needs: [resolve_tag, security_preflight, workflow_scan, integration_check, scan_debian, scan_alpine, scan_ubuntu]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check every gate
+        env:
+          REQUIRED: >-
+            ${{ needs.resolve_tag.result }} ${{ needs.workflow_scan.result }}
+            ${{ needs.integration_check.result }}
+          OPTIONAL: >-
+            ${{ needs.security_preflight.result }} ${{ needs.scan_debian.result }}
+            ${{ needs.scan_alpine.result }} ${{ needs.scan_ubuntu.result }}
+        run: |
+          echo "required: $REQUIRED"
+          echo "optional: $OPTIONAL"
+          for r in $REQUIRED; do
+            [ "$r" = "success" ] || { echo "::error::release blocked: a required job did not succeed"; exit 1; }
+          done
+          # The scans may be skipped (skip_security_scan), the preflight never blocks.
+          for r in $OPTIONAL; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::release blocked: a gate job failed"; exit 1 ;;
+            esac
+          done
+          echo "all gates passed"
+
+      # Fail closed if the approval environment is not actually protected. GitHub
+      # creates a missing environment silently, with no rules, the first time a
+      # job names one.
+      - name: Verify the approval environment requires a reviewer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          if n=$(gh api "repos/${REPO}/environments/release-approval" \
+                   --jq '[.protection_rules[]? | select(.type=="required_reviewers")] | length' 2>/dev/null); then :; else n=""; fi
+          if [ -z "$n" ]; then
+            echo "::error::cannot read the release-approval environment. Create it with at least one required reviewer before releasing."
+            exit 1
+          fi
+          if [ "$n" = "0" ]; then
+            echo "::error::release-approval has no required reviewer, so the approval below would be granted automatically. Add one."
+            exit 1
+          fi
+          echo "release-approval requires ${n} reviewer(s)"
+
+  # THE approval, and the only one on a successful release. It holds no secrets,
+  # runs no registry command and writes nothing.
+  release_approval:
+    name: "⚠️ Approve to PUBLISH — nothing has been written yet"
+    needs: [resolve_tag, release_gate]
+    if: always() && needs.release_gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release-approval
+    permissions:
+      contents: read
+    steps:
+      - name: Record the decision
+        env:
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
+        run: |
+          {
+            echo "## Approved: publishing ${TAG}"
+            echo ""
+            echo "1. debian, alpine and ubuntu, built and pushed by digest — no tag yet"
+            echo "2. the GitHub release and the \`${TAG}\` git tag"
+            echo "3. \`latest*\` and the short \`lego*\` tags"
+            echo "4. the Docker Hub page and the CVE issues"
+            echo "5. **commit:** the three version tags, together — immutable, so they come last"
+            echo ""
+            echo "Anything failing before step 5 is rolled back further down this same run,"
+            echo "behind its own approval. Nothing irreversible exists until step 5."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # debian, pushed BY DIGEST: the image and its manifests go to Docker Hub
+  # with no tag, so nothing resolves them unless handed the digest. The tags
+  # come later — the movable ones after the GitHub release, the immutable
+  # version tag last of all. A build that fails on any platform stops the
+  # release here with nothing named, which is the case that used to leave one
+  # variant tagged and another missing.
+  #
+  # pull + no-cache: a published image is built from scratch against a freshly
+  # pulled base, never from a layer cache of unknown age.
+  publish_debian:
+    name: "Push debian by digest"
+    needs: [resolve_tag, release_approval]
+    if: always() && needs.release_approval.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: release
+    permissions:
+      contents: read
+      # Both are needed by attest-build-provenance: attestations to record it,
+      # and OIDC to prove to Sigstore which workflow produced the image.
+      attestations: write
+      "id-token": write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      # Set immediately before the push: "something may exist on Docker Hub".
+      push_attempted: ${{ steps.mark.outputs.attempted }}
+    steps:
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
           tmpfs_size: 7
           swap_size: 9
 
-      - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          should_login: true
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Compute Debian tags
-        id: tags
+      # Over stdin, not as an action input, so the token reaches docker and no
+      # third-party action.
+      - name: Log in to Docker Hub
         env:
-          LEGO: ${{ needs.resolve_tag.outputs.lego }}
-          NGINX: ${{ needs.resolve_tag.outputs.nginx }}
-          REVISION: ${{ needs.resolve_tag.outputs.revision }}
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PAT: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
         run: |
-          BASE="emulator/docker-nginx-lego"
-          L="${LEGO}"
-          N="${NGINX}"
-          R="${REVISION}"
-          {
-            echo 'value<<EOF'
-            if [ -n "$R" ]; then
-              # Revision rebuild: the base version tags are already published and
-              # immutable. Push only the new revision tag; latest still moves.
-              echo "${BASE}:lego${L}-nginx${N}-r${R}"
-            else
-              # First release of this version: publish the immutable version tags.
-              echo "${BASE}:lego${L}-nginx${N}"
-              echo "${BASE}:lego${L}"
-            fi
-            echo "${BASE}:latest"
-            echo 'EOF'
-          } >> $GITHUB_OUTPUT
+          user=$(printf '%s' "$HUB_USER" | tr -d '[:space:]')
+          pat=$(printf '%s' "$HUB_PAT" | tr -d '[:space:]')
+          [ "$user" = "$(printf '%s' "$user" | tr '[:upper:]' '[:lower:]')" ] || \
+            echo "::warning::DOCKERHUB_USERNAME contains uppercase. Docker Hub currently requires the lowercase Docker ID; if the login below fails with a malformed authorization header, that is why."
+          if [ -z "$user" ] || [ -z "$pat" ]; then
+            echo "::error::Docker Hub username or token is empty. The username must be the Docker ID, not an email address."
+            exit 1
+          fi
+          printf '%s' "$pat" | docker login docker.io -u "$user" --password-stdin
 
-      - name: Build and push all Debian images
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+      - name: Record that content is about to be pushed
+        id: mark
+        run: echo "attempted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./src
           file: ./src/Dockerfile
@@ -437,78 +618,97 @@ jobs:
             linux/arm/v7
           pull: true
           no-cache: true
-          push: true
-          tags: ${{ steps.tags.outputs.value }}
+          provenance: mode=max
+          sbom: true
+          outputs: type=image,"name=docker.io/${{ needs.resolve_tag.outputs.hub_repo }}",push-by-digest=true,name-canonical=true,push=true
 
-  docker_buildx_alpine:
-    needs: [resolve_tag, security_preflight, integration_check, scan_debian, scan_alpine, scan_ubuntu]
-    if: |
-      always() &&
-      needs.resolve_tag.result == 'success' &&
-      needs.integration_check.result == 'success' &&
-      (needs.scan_debian.result == 'success' || needs.scan_debian.result == 'skipped') &&
-      (needs.scan_alpine.result == 'success' || needs.scan_alpine.result == 'skipped') &&
-      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped') &&
-      (needs.security_preflight.result == 'success' || needs.security_preflight.result == 'skipped')
-    runs-on: ubuntu-latest
-    environment: release
-    timeout-minutes: 45
-    steps:
-      - name: Log dependency results
+      - name: Attest the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: docker.io/${{ needs.resolve_tag.outputs.hub_repo }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: false
+
+      # The build action reports the digest it pushed; it does not prove Docker
+      # Hub serves it. And the version tag must NOT exist yet: it belongs to
+      # commit_tags and only commit_tags.
+      - name: Verify what Docker Hub now serves
         env:
-          INTEGRATION_CHECK_RESULT: ${{ needs.integration_check.result }}
-          RESOLVE_TAG_RESULT: ${{ needs.resolve_tag.result }}
-          SCAN_ALPINE_RESULT: ${{ needs.scan_alpine.result }}
-          SCAN_DEBIAN_RESULT: ${{ needs.scan_debian.result }}
-          SCAN_UBUNTU_RESULT: ${{ needs.scan_ubuntu.result }}
+          HUB_REPO: ${{ needs.resolve_tag.outputs.hub_repo }}
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          echo "resolve_tag:       ${RESOLVE_TAG_RESULT}"
-          echo "integration_check: ${INTEGRATION_CHECK_RESULT}"
-          echo "scan_debian:       ${SCAN_DEBIAN_RESULT}"
-          echo "scan_alpine:       ${SCAN_ALPINE_RESULT}"
-          echo "scan_ubuntu:       ${SCAN_UBUNTU_RESULT}"
+          set -euo pipefail
+          got=$(docker buildx imagetools inspect "docker.io/${HUB_REPO}@${DIGEST}" --format '{{.Manifest.Digest}}')
+          [ "$got" = "$DIGEST" ] || { echo "::error::Docker Hub does not serve ${DIGEST}"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${HUB_REPO}/tags/${TAG}/")
+          [ "$code" = "404" ] || { echo "::error::${HUB_REPO}:${TAG} already exists (HTTP ${code}) — only commit_tags may create it"; exit 1; }
+          echo "Docker Hub serves debian as ${DIGEST}, with no version tag yet"
 
+  # alpine, pushed BY DIGEST: the image and its manifests go to Docker Hub
+  # with no tag, so nothing resolves them unless handed the digest. The tags
+  # come later — the movable ones after the GitHub release, the immutable
+  # version tag last of all. A build that fails on any platform stops the
+  # release here with nothing named, which is the case that used to leave one
+  # variant tagged and another missing.
+  #
+  # pull + no-cache: a published image is built from scratch against a freshly
+  # pulled base, never from a layer cache of unknown age.
+  publish_alpine:
+    name: "Push alpine by digest"
+    needs: [resolve_tag, release_approval]
+    if: always() && needs.release_approval.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+      # Both are needed by attest-build-provenance: attestations to record it,
+      # and OIDC to prove to Sigstore which workflow produced the image.
+      attestations: write
+      "id-token": write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      # Set immediately before the push: "something may exist on Docker Hub".
+      push_attempted: ${{ steps.mark.outputs.attempted }}
+    steps:
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
           tmpfs_size: 7
           swap_size: 9
 
-      - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          should_login: true
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Compute Alpine tags
-        id: tags
+      # Over stdin, not as an action input, so the token reaches docker and no
+      # third-party action.
+      - name: Log in to Docker Hub
         env:
-          LEGO: ${{ needs.resolve_tag.outputs.lego }}
-          NGINX: ${{ needs.resolve_tag.outputs.nginx }}
-          REVISION: ${{ needs.resolve_tag.outputs.revision }}
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PAT: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
         run: |
-          BASE="emulator/docker-nginx-lego"
-          L="${LEGO}"
-          N="${NGINX}"
-          R="${REVISION}"
-          {
-            echo 'value<<EOF'
-            if [ -n "$R" ]; then
-              # Revision rebuild: the base version tags are already published and
-              # immutable. Push only the new revision tag; latest still moves.
-              echo "${BASE}:lego${L}-nginx${N}-r${R}-alpine"
-            else
-              # First release of this version: publish the immutable version tags.
-              echo "${BASE}:lego${L}-nginx${N}-alpine"
-              echo "${BASE}:lego${L}-alpine"
-            fi
-            echo "${BASE}:latest-alpine"
-            echo 'EOF'
-          } >> $GITHUB_OUTPUT
+          user=$(printf '%s' "$HUB_USER" | tr -d '[:space:]')
+          pat=$(printf '%s' "$HUB_PAT" | tr -d '[:space:]')
+          [ "$user" = "$(printf '%s' "$user" | tr '[:upper:]' '[:lower:]')" ] || \
+            echo "::warning::DOCKERHUB_USERNAME contains uppercase. Docker Hub currently requires the lowercase Docker ID; if the login below fails with a malformed authorization header, that is why."
+          if [ -z "$user" ] || [ -z "$pat" ]; then
+            echo "::error::Docker Hub username or token is empty. The username must be the Docker ID, not an email address."
+            exit 1
+          fi
+          printf '%s' "$pat" | docker login docker.io -u "$user" --password-stdin
 
-      - name: Build and push all Alpine images
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+      - name: Record that content is about to be pushed
+        id: mark
+        run: echo "attempted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./src
           file: ./src/Dockerfile-alpine
@@ -517,78 +717,97 @@ jobs:
             linux/arm64
           pull: true
           no-cache: true
-          push: true
-          tags: ${{ steps.tags.outputs.value }}
+          provenance: mode=max
+          sbom: true
+          outputs: type=image,"name=docker.io/${{ needs.resolve_tag.outputs.hub_repo }}",push-by-digest=true,name-canonical=true,push=true
 
-  docker_buildx_ubuntu:
-    needs: [resolve_tag, security_preflight, integration_check, scan_debian, scan_alpine, scan_ubuntu]
-    if: |
-      always() &&
-      needs.resolve_tag.result == 'success' &&
-      needs.integration_check.result == 'success' &&
-      (needs.scan_debian.result == 'success' || needs.scan_debian.result == 'skipped') &&
-      (needs.scan_alpine.result == 'success' || needs.scan_alpine.result == 'skipped') &&
-      (needs.scan_ubuntu.result == 'success' || needs.scan_ubuntu.result == 'skipped') &&
-      (needs.security_preflight.result == 'success' || needs.security_preflight.result == 'skipped')
-    runs-on: ubuntu-latest
-    environment: release
-    timeout-minutes: 45
-    steps:
-      - name: Log dependency results
+      - name: Attest the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: docker.io/${{ needs.resolve_tag.outputs.hub_repo }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: false
+
+      # The build action reports the digest it pushed; it does not prove Docker
+      # Hub serves it. And the version tag must NOT exist yet: it belongs to
+      # commit_tags and only commit_tags.
+      - name: Verify what Docker Hub now serves
         env:
-          INTEGRATION_CHECK_RESULT: ${{ needs.integration_check.result }}
-          RESOLVE_TAG_RESULT: ${{ needs.resolve_tag.result }}
-          SCAN_ALPINE_RESULT: ${{ needs.scan_alpine.result }}
-          SCAN_DEBIAN_RESULT: ${{ needs.scan_debian.result }}
-          SCAN_UBUNTU_RESULT: ${{ needs.scan_ubuntu.result }}
+          HUB_REPO: ${{ needs.resolve_tag.outputs.hub_repo }}
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          echo "resolve_tag:       ${RESOLVE_TAG_RESULT}"
-          echo "integration_check: ${INTEGRATION_CHECK_RESULT}"
-          echo "scan_debian:       ${SCAN_DEBIAN_RESULT}"
-          echo "scan_alpine:       ${SCAN_ALPINE_RESULT}"
-          echo "scan_ubuntu:       ${SCAN_UBUNTU_RESULT}"
+          set -euo pipefail
+          got=$(docker buildx imagetools inspect "docker.io/${HUB_REPO}@${DIGEST}" --format '{{.Manifest.Digest}}')
+          [ "$got" = "$DIGEST" ] || { echo "::error::Docker Hub does not serve ${DIGEST}"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${HUB_REPO}/tags/${TAG}-alpine/")
+          [ "$code" = "404" ] || { echo "::error::${HUB_REPO}:${TAG}-alpine already exists (HTTP ${code}) — only commit_tags may create it"; exit 1; }
+          echo "Docker Hub serves alpine as ${DIGEST}, with no version tag yet"
 
+  # ubuntu, pushed BY DIGEST: the image and its manifests go to Docker Hub
+  # with no tag, so nothing resolves them unless handed the digest. The tags
+  # come later — the movable ones after the GitHub release, the immutable
+  # version tag last of all. A build that fails on any platform stops the
+  # release here with nothing named, which is the case that used to leave one
+  # variant tagged and another missing.
+  #
+  # pull + no-cache: a published image is built from scratch against a freshly
+  # pulled base, never from a layer cache of unknown age.
+  publish_ubuntu:
+    name: "Push ubuntu by digest"
+    needs: [resolve_tag, release_approval]
+    if: always() && needs.release_approval.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+      # Both are needed by attest-build-provenance: attestations to record it,
+      # and OIDC to prove to Sigstore which workflow produced the image.
+      attestations: write
+      "id-token": write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      # Set immediately before the push: "something may exist on Docker Hub".
+      push_attempted: ${{ steps.mark.outputs.attempted }}
+    steps:
       - name: Run Docker on tmpfs
         uses: JonasAlfredsson/docker-on-tmpfs@55e939ef196646234a12c245e3414879e3580f01 # v2.0.0
         with:
           tmpfs_size: 7
           swap_size: 9
 
-      - name: Perform setup steps
-        uses: JonasAlfredsson/checkout-qemu-buildx@1ef57f66f3e2960c64983b9ee94e155d466500e1 # v2.0.0
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          should_login: true
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Compute Ubuntu tags
-        id: tags
+      # Over stdin, not as an action input, so the token reaches docker and no
+      # third-party action.
+      - name: Log in to Docker Hub
         env:
-          LEGO: ${{ needs.resolve_tag.outputs.lego }}
-          NGINX: ${{ needs.resolve_tag.outputs.nginx }}
-          REVISION: ${{ needs.resolve_tag.outputs.revision }}
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PAT: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
         run: |
-          BASE="emulator/docker-nginx-lego"
-          L="${LEGO}"
-          N="${NGINX}"
-          R="${REVISION}"
-          {
-            echo 'value<<EOF'
-            if [ -n "$R" ]; then
-              # Revision rebuild: the base version tags are already published and
-              # immutable. Push only the new revision tag; latest still moves.
-              echo "${BASE}:lego${L}-nginx${N}-r${R}-ubuntu"
-            else
-              # First release of this version: publish the immutable version tags.
-              echo "${BASE}:lego${L}-nginx${N}-ubuntu"
-              echo "${BASE}:lego${L}-ubuntu"
-            fi
-            echo "${BASE}:latest-ubuntu"
-            echo 'EOF'
-          } >> $GITHUB_OUTPUT
+          user=$(printf '%s' "$HUB_USER" | tr -d '[:space:]')
+          pat=$(printf '%s' "$HUB_PAT" | tr -d '[:space:]')
+          [ "$user" = "$(printf '%s' "$user" | tr '[:upper:]' '[:lower:]')" ] || \
+            echo "::warning::DOCKERHUB_USERNAME contains uppercase. Docker Hub currently requires the lowercase Docker ID; if the login below fails with a malformed authorization header, that is why."
+          if [ -z "$user" ] || [ -z "$pat" ]; then
+            echo "::error::Docker Hub username or token is empty. The username must be the Docker ID, not an email address."
+            exit 1
+          fi
+          printf '%s' "$pat" | docker login docker.io -u "$user" --password-stdin
 
-      - name: Build and push all Ubuntu images
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+      - name: Record that content is about to be pushed
+        id: mark
+        run: echo "attempted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./src
           file: ./src/Dockerfile-ubuntu
@@ -597,357 +816,645 @@ jobs:
             linux/arm64
           pull: true
           no-cache: true
-          push: true
-          tags: ${{ steps.tags.outputs.value }}
+          provenance: mode=max
+          sbom: true
+          outputs: type=image,"name=docker.io/${{ needs.resolve_tag.outputs.hub_repo }}",push-by-digest=true,name-canonical=true,push=true
 
-  release_gate:
-    name: "Release gate"
-    needs: [resolve_tag, security_preflight, integration_check, scan_debian, scan_alpine, scan_ubuntu, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Log all job results
-        env:
-          DOCKER_BUILDX_ALPINE_RESULT: ${{ needs.docker_buildx_alpine.result }}
-          DOCKER_BUILDX_DEBIAN_RESULT: ${{ needs.docker_buildx_debian.result }}
-          DOCKER_BUILDX_UBUNTU_RESULT: ${{ needs.docker_buildx_ubuntu.result }}
-          INTEGRATION_CHECK_RESULT: ${{ needs.integration_check.result }}
-          RESOLVE_TAG_RESULT: ${{ needs.resolve_tag.result }}
-          SCAN_ALPINE_RESULT: ${{ needs.scan_alpine.result }}
-          SCAN_DEBIAN_RESULT: ${{ needs.scan_debian.result }}
-          SCAN_UBUNTU_RESULT: ${{ needs.scan_ubuntu.result }}
-          SECURITY_PREFLIGHT_RESULT: ${{ needs.security_preflight.result }}
-        run: |
-          echo "resolve_tag:          ${RESOLVE_TAG_RESULT}"
-          echo "security_preflight:   ${SECURITY_PREFLIGHT_RESULT}"
-          echo "integration_check:    ${INTEGRATION_CHECK_RESULT}"
-          echo "scan_debian:          ${SCAN_DEBIAN_RESULT}"
-          echo "scan_alpine:          ${SCAN_ALPINE_RESULT}"
-          echo "scan_ubuntu:          ${SCAN_UBUNTU_RESULT}"
-          echo "docker_buildx_debian: ${DOCKER_BUILDX_DEBIAN_RESULT}"
-          echo "docker_buildx_alpine: ${DOCKER_BUILDX_ALPINE_RESULT}"
-          echo "docker_buildx_ubuntu: ${DOCKER_BUILDX_UBUNTU_RESULT}"
-      - name: Check all builds succeeded
-        env:
-          DOCKER_BUILDX_ALPINE_RESULT: ${{ needs.docker_buildx_alpine.result }}
-          DOCKER_BUILDX_DEBIAN_RESULT: ${{ needs.docker_buildx_debian.result }}
-          DOCKER_BUILDX_UBUNTU_RESULT: ${{ needs.docker_buildx_ubuntu.result }}
-          RESOLVE_TAG_RESULT: ${{ needs.resolve_tag.result }}
-        run: |
-          if [ "${RESOLVE_TAG_RESULT}"          != "success" ] || \
-             [ "${DOCKER_BUILDX_DEBIAN_RESULT}" != "success" ] || \
-             [ "${DOCKER_BUILDX_ALPINE_RESULT}" != "success" ] || \
-             [ "${DOCKER_BUILDX_UBUNTU_RESULT}" != "success" ]; then
-            echo "Release blocked: one or more required jobs did not succeed"
-            exit 1
-          fi
-          echo "All required builds succeeded — proceeding to GitHub release"
+      - name: Attest the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: docker.io/${{ needs.resolve_tag.outputs.hub_repo }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: false
 
+      # The build action reports the digest it pushed; it does not prove Docker
+      # Hub serves it. And the version tag must NOT exist yet: it belongs to
+      # commit_tags and only commit_tags.
+      - name: Verify what Docker Hub now serves
+        env:
+          HUB_REPO: ${{ needs.resolve_tag.outputs.hub_repo }}
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          got=$(docker buildx imagetools inspect "docker.io/${HUB_REPO}@${DIGEST}" --format '{{.Manifest.Digest}}')
+          [ "$got" = "$DIGEST" ] || { echo "::error::Docker Hub does not serve ${DIGEST}"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${HUB_REPO}/tags/${TAG}-ubuntu/")
+          [ "$code" = "404" ] || { echo "::error::${HUB_REPO}:${TAG}-ubuntu already exists (HTTP ${code}) — only commit_tags may create it"; exit 1; }
+          echo "Docker Hub serves ubuntu as ${DIGEST}, with no version tag yet"
+
+  # The GitHub release, and with it the git tag, on the exact commit that was
+  # built. Only once all three variants are on Docker Hub.
   github_release:
-    needs: [resolve_tag, release_gate]
-    if: always() && needs.release_gate.result == 'success'
+    name: "Create GitHub release"
+    needs: [resolve_tag, release_approval, publish_debian, publish_alpine, publish_ubuntu]
+    if: |
+      always() && needs.release_approval.result == 'success' &&
+      needs.publish_debian.result == 'success' &&
+      needs.publish_alpine.result == 'success' &&
+      needs.publish_ubuntu.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
-    environment: release
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
-      - name: Create GitHub release (auto-generated notes)
-        if: inputs.notes == '' && !inputs.override_notes
-        run: |
-          gh release create "${TAG}" \
-              --title "${TAG}" \
-              --generate-notes \
-              --latest
+      - name: Create the release
         env:
-          TAG: ${{ needs.resolve_tag.outputs.tag }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub release (prepend custom notes)
-        if: inputs.notes != '' && !inputs.override_notes
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
+          NOTES: ${{ inputs.notes }}
+          OVERRIDE: ${{ inputs.override_notes }}
         run: |
-          prev_tag=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -1)
-          if [ -n "$prev_tag" ]; then
-            generated=$(gh api repos/"${GITHUB_REPOSITORY}"/releases/generate-notes \
-              -f tag_name="${TAG}" \
-              -f previous_tag_name="$prev_tag" \
-              --jq '.body')
-          else
-            generated=""
+          set -uo pipefail
+          generated=""
+          if [ "$OVERRIDE" != "true" ]; then
+            # From the last published release, so a draft or a withdrawn attempt
+            # never becomes the start of the range.
+            prev=$(gh release list --repo "$REPO" --exclude-drafts --exclude-pre-releases --limit 1 \
+                     --json tagName --jq '.[0].tagName // ""') \
+              || { echo "::error::cannot list the releases"; exit 1; }
+            args=(-f tag_name="$TAG" -f target_commitish="$GITHUB_SHA")
+            if [ -n "$prev" ]; then args+=(-f previous_tag_name="$prev"); fi
+            generated=$(gh api "repos/${REPO}/releases/generate-notes" "${args[@]}" --jq '.body') \
+              || { echo "::error::could not generate the release notes"; exit 1; }
           fi
-          body="$NOTES"
-          [ -n "$generated" ] && body="${body}"$'\n\n'"${generated}"
-          gh release create "${TAG}" \
-              --title "${TAG}" \
-              --notes "$body" \
-              --latest
-        env:
-          TAG: ${{ needs.resolve_tag.outputs.tag }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NOTES: ${{ inputs.notes }}
+          {
+            if [ -n "$NOTES" ]; then printf '%s\n\n' "$NOTES"; fi
+            if [ -n "$generated" ]; then printf '%s\n' "$generated"; fi
+          } > notes.md
+          [ -s notes.md ] || echo "${TAG}" > notes.md
+          gh release create "$TAG" --repo "$REPO" --title "$TAG" --target "$GITHUB_SHA" \
+            --notes-file notes.md --latest \
+            || { echo "::error::could not create release ${TAG}"; exit 1; }
 
-      - name: Create GitHub release (override notes)
-        if: inputs.override_notes
-        run: |
-          gh release create "${TAG}" \
-              --title "${TAG}" \
-              --notes "$NOTES" \
-              --latest
-        env:
-          TAG: ${{ needs.resolve_tag.outputs.tag }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NOTES: ${{ inputs.notes }}
-
-      - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-          repository: emulator/docker-nginx-lego
-          readme-filepath: ./docs/dockerhub_description.md
-
-      - name: Summary
-        env:
-          TAG: ${{ needs.resolve_tag.outputs.tag }}
-        run: |
-          echo "### Released ${TAG}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- [GitHub release](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG})" >> $GITHUB_STEP_SUMMARY
-          echo "- Docker Hub: \`emulator/docker-nginx-lego:${TAG}\`" >> $GITHUB_STEP_SUMMARY
-
-  post_release_report:
-    name: "Post-release vulnerability report"
-    needs: [resolve_tag, github_release]
-    if: always() && needs.github_release.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-      security-events: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Scan Debian released image
-        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
-        with:
-          scan-ref: emulator/docker-nginx-lego:latest
-          trivyignores: .trivyignore
-          format: json
-          output: trivy-debian.json
-          exit-code: 0
-
-      - name: Scan Alpine released image
-        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
-        with:
-          scan-ref: emulator/docker-nginx-lego:latest-alpine
-          trivyignores: .trivyignore
-          format: json
-          output: trivy-alpine.json
-          exit-code: 0
-
-      - name: Scan Ubuntu released image
-        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
-        with:
-          scan-ref: emulator/docker-nginx-lego:latest-ubuntu
-          trivyignores: .trivyignore
-          format: json
-          output: trivy-ubuntu.json
-          exit-code: 0
-
-      - name: Build step summary
-        if: always()
-        env:
-          TAG: ${{ needs.resolve_tag.outputs.tag }}
-        run: |
-          echo "## Vulnerability Report — ${TAG}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          for VARIANT in debian alpine ubuntu; do
-            echo "### ${VARIANT}" >> $GITHUB_STEP_SUMMARY
-            if [ -f "trivy-${VARIANT}.json" ]; then
-              COUNT=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "trivy-${VARIANT}.json" || echo 0)
-              CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "trivy-${VARIANT}.json" || echo 0)
-              HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "trivy-${VARIANT}.json" || echo 0)
-              echo "Total findings: ${COUNT} | Critical: ${CRIT} | High: ${HIGH}" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "Scan output not available" >> $GITHUB_STEP_SUMMARY
-            fi
-            echo "" >> $GITHUB_STEP_SUMMARY
-          done
-
-      - name: Create or update GitHub Issues for new CVEs
+      - name: Verify the release is published
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           TAG: ${{ needs.resolve_tag.outputs.tag }}
         run: |
-          TODAY=$(date +%Y-%m-%d)
+          set -euo pipefail
+          draft=$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft) \
+            || { echo "::error::release ${TAG} does not exist after creating it"; exit 1; }
+          [ "$draft" = "false" ] || { echo "::error::release ${TAG} is a draft"; exit 1; }
+          sha=$(gh api "repos/${REPO}/commits/${TAG}" --jq .sha)
+          [ "$sha" = "$GITHUB_SHA" ] || { echo "::error::${TAG} points at ${sha}, not the built commit ${GITHUB_SHA}"; exit 1; }
+          echo "release ${TAG} is published on ${GITHUB_SHA}"
 
-          ALL_CVES=$(for VARIANT in debian alpine ubuntu; do
-            [ -f "trivy-${VARIANT}.json" ] || continue
-            jq -r '.Results[]?.Vulnerabilities[]? |
-              select(.Severity == "CRITICAL" or .Severity == "HIGH") |
-              .VulnerabilityID' "trivy-${VARIANT}.json"
-          done | sort -u)
-
-          if [ -z "$ALL_CVES" ]; then
-            echo "No CRITICAL/HIGH CVEs found." >> $GITHUB_STEP_SUMMARY
-            exit 0
+  # The movable tags. latest<sfx> always; the short lego<L><sfx> tag only on the
+  # first release of an nginx version, as before. imagetools create points a tag
+  # at the existing manifest list rather than rebuilding, so each tag is
+  # byte-for-byte the image that was pushed and attested.
+  promote_moving_tags:
+    name: "Move latest and the short tags"
+    needs: [resolve_tag, release_approval, publish_debian, publish_alpine, publish_ubuntu, github_release]
+    if: always() && needs.github_release.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Log in to Docker Hub
+        env:
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PAT: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
+        run: |
+          user=$(printf '%s' "$HUB_USER" | tr -d '[:space:]')
+          pat=$(printf '%s' "$HUB_PAT" | tr -d '[:space:]')
+          if [ -z "$user" ] || [ -z "$pat" ]; then
+            echo "::error::Docker Hub username or token is empty."
+            exit 1
           fi
+          printf '%s' "$pat" | docker login docker.io -u "$user" --password-stdin
 
-          echo "$ALL_CVES" | while read -r CVE_ID; do
-            [ -z "$CVE_ID" ] && continue
-            AFFECTED=""
-            FIX_VERSIONS=""
-            SEVERITY=""
-            PKG=""
-            for VARIANT in debian alpine ubuntu; do
-              [ -f "trivy-${VARIANT}.json" ] || continue
-              ROW=$(jq -r --arg cve "$CVE_ID" '
-                .Results[]?.Vulnerabilities[]? |
-                select(.VulnerabilityID == $cve and (.Severity == "CRITICAL" or .Severity == "HIGH")) |
-                "\(.Severity)\t\(.PkgName)\t\(.FixedVersion // "unknown")"
-              ' "trivy-${VARIANT}.json" | head -1)
-              [ -z "$ROW" ] && continue
-              SEVERITY=$(echo "$ROW" | cut -f1)
-              PKG=$(echo "$ROW" | cut -f2)
-              FIXED=$(echo "$ROW" | cut -f3)
-              AFFECTED="${AFFECTED} ${VARIANT}"
-              FIX_VERSIONS="${FIX_VERSIONS} ${VARIANT}:${FIXED}"
+      - name: Point the tags at the released digests, and read them back
+        env:
+          HUB_REPO: ${{ needs.resolve_tag.outputs.hub_repo }}
+          LEGO: ${{ needs.resolve_tag.outputs.lego }}
+          REVISION: ${{ needs.resolve_tag.outputs.revision }}
+          D_DEBIAN: ${{ needs.publish_debian.outputs.digest }}
+          D_ALPINE: ${{ needs.publish_alpine.outputs.digest }}
+          D_UBUNTU: ${{ needs.publish_ubuntu.outputs.digest }}
+        run: |
+          set -euo pipefail
+          img="docker.io/${HUB_REPO}"
+          at() { docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}'; }
+          for pair in ":${D_DEBIAN}" "-alpine:${D_ALPINE}" "-ubuntu:${D_UBUNTU}"; do
+            sfx=${pair%%:*}; d=${pair#*:}
+            printf '%s' "$d" | grep -qE '^sha256:[0-9a-f]{64}$' || { echo "::error::'${d}' is not a digest"; exit 1; }
+            tags="latest${sfx}"
+            [ -n "$REVISION" ] || tags="${tags} lego${LEGO}${sfx}"
+            for t in $tags; do
+              docker buildx imagetools create --tag "${img}:${t}" "${img}@${d}"
+              [ "$(at "${img}:${t}")" = "$d" ] || { echo "::error::${t} does not resolve to ${d}"; exit 1; }
+              echo "${t} -> ${d}"
             done
-            [ -z "$AFFECTED" ] && continue
-
-            EXISTING=$(gh issue list --repo "$REPO" --label security \
-              --search "${CVE_ID}" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
-
-            if [ -n "$EXISTING" ]; then
-              gh issue comment "$EXISTING" --repo "$REPO" \
-                --body "Last seen in release \`${TAG}\` (${TODAY}). Affected images:${AFFECTED}. Fix versions:${FIX_VERSIONS}."
-            else
-              TITLE="[SECURITY] ${CVE_ID}: ${PKG} (${SEVERITY})"
-              BODY="**CVE:** ${CVE_ID}
-          **Severity:** ${SEVERITY}
-          **Package:** ${PKG}
-          **Detected in release:** \`${TAG}\`
-          **Affected images:**${AFFECTED}
-          **Fix versions:**${FIX_VERSIONS}
-
-          To suppress if accepted: add to \`.trivyignore\`:
-          \`\`\`
-          ${CVE_ID}  # reason
-          \`\`\`"
-              gh issue create --repo "$REPO" \
-                --title "$TITLE" \
-                --body "$BODY" \
-                --label security \
-                --label "severity:$(echo "$SEVERITY" | tr '[:upper:]' '[:lower:]')"
-            fi
           done
 
-  cleanup_git:
-    name: "Delete git tag on failure or cancellation"
-    needs: [resolve_tag, release_gate, docker_buildx_debian, docker_buildx_alpine, docker_buildx_ubuntu]
-    if: failure() || cancelled()
+  # The Docker Hub page, from the page source of the commit being released. A
+  # top-level job: a job inside a called workflow never receives its
+  # environment's secrets. The account password reaches a script in this
+  # repository and no third-party action, and the page is read back.
+  dockerhub_description:
+    name: "Refresh the Docker Hub page"
+    needs: [resolve_tag, release_approval, promote_moving_tags]
+    if: always() && needs.promote_moving_tags.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: dockerhub-metadata
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Publish the page and read it back
+        env:
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PW: ${{ secrets.DOCKERHUB_PASSWORD }}
+          HUB_REPO: ${{ needs.resolve_tag.outputs.hub_repo }}
+        run: ./scripts/dockerhub_page.sh "$HUB_REPO" docs/dockerhub_description.md
+
+  # Scan what was actually published, by digest. Read only: this runs a
+  # third-party scanner over images and reads strings out of somebody else's
+  # advisory database, so it holds no token that can write anything.
+  scan_published:
+    name: "Scan the published images"
+    needs: [resolve_tag, release_approval, publish_debian, publish_alpine, publish_ubuntu]
+    if: |
+      always() && needs.publish_debian.result == 'success' &&
+      needs.publish_alpine.result == 'success' && needs.publish_ubuntu.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Scan the debian image
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: docker.io/${{ needs.resolve_tag.outputs.hub_repo }}@${{ needs.publish_debian.outputs.digest }}
+          trivyignores: .trivyignore
+          format: json
+          output: trivy-debian.json
+          exit-code: 0
+      - name: Scan the alpine image
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: docker.io/${{ needs.resolve_tag.outputs.hub_repo }}@${{ needs.publish_alpine.outputs.digest }}
+          trivyignores: .trivyignore
+          format: json
+          output: trivy-alpine.json
+          exit-code: 0
+      - name: Scan the ubuntu image
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: docker.io/${{ needs.resolve_tag.outputs.hub_repo }}@${{ needs.publish_ubuntu.outputs.digest }}
+          trivyignores: .trivyignore
+          format: json
+          output: trivy-ubuntu.json
+          exit-code: 0
+      - name: Summarise
+        env:
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Vulnerability report — ${TAG}"
+            echo ""
+            for v in debian alpine ubuntu; do
+              f="trivy-${v}.json"
+              [ -s "$f" ] || { echo "::error::no scan output for ${v}"; exit 1; }
+              total=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$f")
+              crit=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$f")
+              high=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$f")
+              echo "- ${v}: ${total} findings, ${crit} critical, ${high} high"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Hand the scans on
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scans
+          path: trivy-*.json
+          if-no-files-found: error
+
+  # One issue per CVE. A finding with an open issue gets a comment instead, so
+  # a withdrawal can put the list back exactly: close what this release opened,
+  # delete what it commented. After the moving tags, so the list describes a
+  # release users can already pull. Fatal, like every write before the commit.
+  record_cves:
+    name: "Open or update an issue per CVE"
+    needs: [resolve_tag, release_approval, promote_moving_tags, scan_published]
+    if: |
+      always() && needs.promote_moving_tags.result == 'success' &&
+      needs.scan_published.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: scans
+      - name: Open or update an issue per CVE
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
+        run: |
+          set -uo pipefail
+          today=$(date +%Y-%m-%d)
+          cves=$(for v in debian alpine ubuntu; do
+                   jq -r '.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH") | .VulnerabilityID' "trivy-${v}.json"
+                 done | sort -u)
+          if [ -z "$cves" ]; then
+            echo "No CRITICAL or HIGH findings in the released images." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          open_issues=$(gh issue list --repo "$REPO" --label security --state open --limit 200 \
+                          --json number,title) || { echo "::error::cannot list the open security issues"; exit 1; }
+          failed=0
+          while read -r cve; do
+            [ -n "$cve" ] || continue
+            affected=""; fixes=""; severity=""; pkg=""
+            for v in debian alpine ubuntu; do
+              row=$(jq -r --arg cve "$cve" '
+                .Results[]?.Vulnerabilities[]? |
+                select(.VulnerabilityID == $cve and (.Severity == "CRITICAL" or .Severity == "HIGH")) |
+                "\(.Severity)\t\(.PkgName)\t\(.FixedVersion // "unknown")"' "trivy-${v}.json" | head -1)
+              [ -n "$row" ] || continue
+              severity=$(printf '%s' "$row" | cut -f1)
+              pkg=$(printf '%s' "$row" | cut -f2)
+              affected="${affected} ${v}"
+              fixes="${fixes} ${v}:$(printf '%s' "$row" | cut -f3)"
+            done
+            [ -n "$affected" ] || continue
+            existing=$(printf '%s' "$open_issues" | jq -r --arg cve "$cve" \
+                         '.[] | select(.title | contains($cve)) | .number' | head -1)
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$REPO" \
+                --body "Last seen in release \`${TAG}\` (${today}). Affected images:${affected}. Fix versions:${fixes}." >/dev/null \
+                || { echo "::error::could not comment on #${existing} for ${cve}"; failed=1; }
+            else
+              # Markdown code spans, not command substitution.
+              # shellcheck disable=SC2016
+              body=$(printf '**CVE:** %s\n**Severity:** %s\n**Package:** %s\n**Detected in release:** `%s`\n**Affected images:**%s\n**Fix versions:**%s\n\nTo suppress if accepted, add it to `.trivyignore`:\n```\n%s  # reason\n```\n' \
+                       "$cve" "$severity" "$pkg" "$TAG" "$affected" "$fixes" "$cve")
+              gh issue create --repo "$REPO" --title "[SECURITY] ${cve}: ${pkg} (${severity})" \
+                --body "$body" --label security \
+                --label "severity:$(printf '%s' "$severity" | tr '[:upper:]' '[:lower:]')" >/dev/null \
+                || { echo "::error::could not open an issue for ${cve}"; failed=1; }
+            fi
+          done < <(printf '%s\n' "$cves")
+          exit "$failed"
+
+  # THE COMMIT: the three version tags, and nothing after them.
+  #
+  # They are immutable — neither overwritable nor deletable — so they are the one
+  # write that cannot be taken back, and they run only after every other write
+  # has succeeded. All three are created at the same moment, not one per build,
+  # so no variant can be tagged while another is still building or failing.
+  #
+  # Docker Hub has no way to create three tags as one transaction. So each
+  # create is retried, a tag already naming the right digest counts as done, and
+  # the result is judged by what Docker Hub serves afterwards. Should a network
+  # failure still leave one missing, the run stops here WITHOUT rolling back —
+  # the tags already created cannot be deleted — and "Re-run failed jobs"
+  # finishes the rest.
+  commit_tags:
+    name: "Commit: create the three version tags together"
+    needs: [resolve_tag, publish_debian, publish_alpine, publish_ubuntu, github_release, promote_moving_tags, dockerhub_description, scan_published, record_cves]
+    if: |
+      always() &&
+      needs.publish_debian.result == 'success' && needs.publish_alpine.result == 'success' &&
+      needs.publish_ubuntu.result == 'success' && needs.github_release.result == 'success' &&
+      needs.promote_moving_tags.result == 'success' && needs.dockerhub_description.result == 'success' &&
+      needs.scan_published.result == 'success' && needs.record_cves.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      # Set just before the first create: from here on a version tag may exist,
+      # and the rollback below must not run.
+      started: ${{ steps.mark.outputs.started }}
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Log in to Docker Hub
+        env:
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PAT: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
+        run: |
+          user=$(printf '%s' "$HUB_USER" | tr -d '[:space:]')
+          pat=$(printf '%s' "$HUB_PAT" | tr -d '[:space:]')
+          if [ -z "$user" ] || [ -z "$pat" ]; then
+            echo "::error::Docker Hub username or token is empty."
+            exit 1
+          fi
+          printf '%s' "$pat" | docker login docker.io -u "$user" --password-stdin
+
+      - name: Mark the commit as started
+        id: mark
+        run: echo "started=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create the version tags
+        env:
+          HUB_REPO: ${{ needs.resolve_tag.outputs.hub_repo }}
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
+          D_DEBIAN: ${{ needs.publish_debian.outputs.digest }}
+          D_ALPINE: ${{ needs.publish_alpine.outputs.digest }}
+          D_UBUNTU: ${{ needs.publish_ubuntu.outputs.digest }}
+        run: |
+          set -uo pipefail
+          img="docker.io/${HUB_REPO}"
+          served() {
+            curl -s --retry 3 --retry-all-errors --max-time 30 \
+              "https://hub.docker.com/v2/repositories/${HUB_REPO}/tags/$1/" | jq -r '.digest // empty'
+          }
+          # One tag: create it unless it already names the digest; retry.
+          commit() {  # tag digest
+            local t=$1 d=$2 have i
+            for i in 1 2 3 4 5; do
+              have=$(served "$t")
+              [ "$have" = "$d" ] && { echo "${t} -> ${d}"; return 0; }
+              if [ -n "$have" ]; then echo "::error::${t} names ${have}, not ${d}. Something else created it."; return 1; fi
+              docker buildx imagetools create --tag "${img}:${t}" "${img}@${d}" >/dev/null 2>&1 \
+                || echo "attempt ${i} for ${t} reported failure; checking what Docker Hub serves"
+              sleep $((i * 2))
+            done
+            [ "$(served "$t")" = "$d" ] && { echo "${t} -> ${d}"; return 0; }
+            return 1
+          }
+          # All three at the same moment.
+          commit "${TAG}" "$D_DEBIAN" & p1=$!
+          commit "${TAG}-alpine" "$D_ALPINE" & p2=$!
+          commit "${TAG}-ubuntu" "$D_UBUNTU" & p3=$!
+          fail=0
+          wait "$p1" || fail=1
+          wait "$p2" || fail=1
+          wait "$p3" || fail=1
+          if [ "$fail" != "0" ]; then
+            echo "::error::not every version tag of ${TAG} exists. The ones created cannot be deleted, so this run does not roll back. Press 'Re-run failed jobs' to finish: tags already in place are skipped."
+            exit 1
+          fi
+          {
+            echo "### Committed \`${TAG}\`"
+            echo ""
+            echo "\`${TAG}\`, \`${TAG}-alpine\` and \`${TAG}-ubuntu\` now name the images"
+            echo "that were published and verified before any of them existed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── ROLLBACK ──────────────────────────────────────────────────────────────
+  # A release that fails after its first push and before the commit is undone
+  # here, in this same run, so what went wrong and what was undone are on one
+  # page. The steps are the same scripts the manual "Withdraw a release" uses,
+  # under the same credentials, one kind per job.
+  #
+  # rollback_plan lists what exists. rollback_confirm is its own approval, under
+  # release-approval: approving a release is not approving its deletion. Every
+  # undo job needs that approval, which validate.sh checks.
+  #
+  # Not after the commit has started: from then on a version tag may exist, and
+  # the way forward is to finish the commit, not to take the rest back.
+  # always() lets these run when the release was cancelled as well as failed.
+  rollback_plan:
+    name: "↩ Rollback: what this release left behind"
+    needs: [resolve_tag, publish_debian, publish_alpine, publish_ubuntu, commit_tags]
+    if: |
+      always() && needs.resolve_tag.result == 'success' &&
+      (needs.publish_debian.outputs.push_attempted == 'true' || needs.publish_alpine.outputs.push_attempted == 'true' ||
+       needs.publish_ubuntu.outputs.push_attempted == 'true' || needs.publish_debian.result == 'cancelled' ||
+       needs.publish_alpine.result == 'cancelled' || needs.publish_ubuntu.result == 'cancelled') &&
+      needs.commit_tags.result != 'success' && needs.commit_tags.outputs.started != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.p.outputs.tag }}
+      hub_repo: ${{ steps.p.outputs.hub_repo }}
+      digests: ${{ steps.p.outputs.digests }}
+      prev: ${{ steps.p.outputs.prev }}
+      prev_same: ${{ steps.p.outputs.prev_same }}
+      found: ${{ steps.p.outputs.found }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Find what this release left behind
+        id: p
+        env:
+          TAG: ${{ needs.resolve_tag.outputs.tag }}
+          HUB_REPO: ${{ needs.resolve_tag.outputs.hub_repo }}
+          DIGESTS: debian=${{ needs.publish_debian.outputs.digest }},alpine=${{ needs.publish_alpine.outputs.digest }},ubuntu=${{ needs.publish_ubuntu.outputs.digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: ./scripts/withdraw/plan.sh
+
+  rollback_confirm:
+    name: "⚠️ Approve to ROLL BACK everything listed above"
+    needs: [rollback_plan]
+    if: always() && needs.rollback_plan.result == 'success' && needs.rollback_plan.outputs.found == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release-approval
+    permissions:
+      contents: read
+    steps:
+      - name: Record the decision
+        env:
+          TAG: ${{ needs.rollback_plan.outputs.tag }}
+        run: echo "rollback of ${TAG} approved"
+
+  rollback_hub_page:
+    name: "↩ 0. Roll back the Docker Hub page"
+    needs: [rollback_plan, rollback_confirm]
+    if: always() && needs.rollback_confirm.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: dockerhub-metadata
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Restore the page to the live release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.rollback_plan.outputs.tag }}
+          PREV: ${{ needs.rollback_plan.outputs.prev }}
+          HUB_REPO: ${{ needs.rollback_plan.outputs.hub_repo }}
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PW: ${{ secrets.DOCKERHUB_PASSWORD }}
+        run: ./scripts/withdraw/hub_page.sh
+
+  rollback_issues:
+    name: "↩ 0. Roll back the CVE issues"
+    needs: [rollback_plan, rollback_confirm, rollback_hub_page]
+    if: always() && needs.rollback_confirm.result == 'success' && needs.rollback_hub_page.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Close the issues it opened, delete its comments
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.rollback_plan.outputs.tag }}
+        run: ./scripts/withdraw/issues.sh
+
+  rollback_moving_tags:
+    name: "↩ 1. Move latest and the short tags back"
+    needs: [rollback_plan, rollback_confirm, rollback_issues]
+    if: always() && needs.rollback_confirm.result == 'success' && needs.rollback_issues.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Move them back, or remove them
+        env:
+          TAG: ${{ needs.rollback_plan.outputs.tag }}
+          DIGESTS: ${{ needs.rollback_plan.outputs.digests }}
+          PREV: ${{ needs.rollback_plan.outputs.prev }}
+          PREV_SAME: ${{ needs.rollback_plan.outputs.prev_same }}
+          HUB_REPO: ${{ needs.rollback_plan.outputs.hub_repo }}
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PAT: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
+        run: ./scripts/withdraw/latest.sh
+
+  rollback_records:
+    name: "↩ 2. Remove the GitHub release and its tag"
+    needs: [rollback_plan, rollback_confirm, rollback_moving_tags]
+    if: always() && needs.rollback_confirm.result == 'success' && needs.rollback_moving_tags.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-
-      - name: Delete git tag
+      - name: Delete the release and its tag, hand back Latest
         env:
-          TAG: ${{ needs.resolve_tag.outputs.tag }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          [ -z "$TAG" ] && { echo "No tag to delete"; exit 0; }
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" \
-            --delete "$TAG" || echo "Tag $TAG not found or already deleted"
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.rollback_plan.outputs.tag }}
+          PREV: ${{ needs.rollback_plan.outputs.prev }}
+        run: ./scripts/withdraw/records.sh
 
-  cleanup_notice:
-    name: "Pending: approve to delete Docker Hub tags"
-    needs: [resolve_tag, cleanup_git]
-    if: always() && (needs.resolve_tag.result == 'success') && (needs.cleanup_git.result == 'success' || needs.cleanup_git.result == 'failure')
+  # The release never creates these before the commit, so this normally finds
+  # nothing. It runs anyway: the rollback proves that rather than assuming it.
+  rollback_image:
+    name: "↩ 3. Remove the version tags"
+    needs: [rollback_plan, rollback_confirm, rollback_records]
+    if: always() && needs.rollback_confirm.result == 'success' && needs.rollback_records.result == 'success'
     runs-on: ubuntu-latest
-    steps:
-      - name: Explain pending approval
-        env:
-          LEGO: ${{ needs.resolve_tag.outputs.lego }}
-          NGINX: ${{ needs.resolve_tag.outputs.nginx }}
-          REVISION: ${{ needs.resolve_tag.outputs.revision }}
-        run: |
-          L="${LEGO}"
-          N="${NGINX}"
-          R="${REVISION}"
-          if [ -n "$R" ]; then
-            DELETE_LIST="- \`lego${L}-nginx${N}-r${R}\` (+ \`-alpine\`, \`-ubuntu\`)"
-          else
-            DELETE_LIST="- \`lego${L}-nginx${N}\`, \`lego${L}\` (+ \`-alpine\`, \`-ubuntu\`)"
-          fi
-          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## Action required: approve Docker Hub tag deletion
-
-          The release failed or was cancelled. The git tag has already been deleted.
-
-          **The next approval step DELETEs only the tags this run pushed — it is NOT a new release attempt.**
-
-          Tags that will be deleted (if they exist):
-          ${DELETE_LIST}
-
-          The \`latest*\` pointers and any previously-released version tags are
-          **left untouched** — they belong to the last good release.
-
-          Click **Review deployments** → select **release** → **Approve and deploy** to proceed with deletion.
-          EOF
-
-  cleanup_dockerhub:
-    name: "⚠️ Approve to DELETE Docker Hub tags — NOT a release"
-    needs: [resolve_tag, cleanup_notice]
-    if: always() && (needs.resolve_tag.result == 'success') && (needs.cleanup_notice.result == 'success')
-    runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: release
+    permissions:
+      contents: read
+    outputs:
+      kept: ${{ steps.i.outputs.kept }}
     steps:
-      - name: Delete Docker Hub tags
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Delete the tags, unless they are immutable
+        id: i
         env:
-          LEGO: ${{ needs.resolve_tag.outputs.lego }}
-          NGINX: ${{ needs.resolve_tag.outputs.nginx }}
-          REVISION: ${{ needs.resolve_tag.outputs.revision }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
-        run: |
-          L="${LEGO}"
-          N="${NGINX}"
-          R="${REVISION}"
-          [ -z "$L" ] && { echo "No tag outputs available — nothing to clean up on Docker Hub"; exit 0; }
-          BASE="emulator/docker-nginx-lego"
-          token=$(curl -sf -X POST "https://hub.docker.com/v2/users/login" \
-            -H "Content-Type: application/json" \
-            -d "{\"username\":\"${DOCKERHUB_USERNAME}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
-            | grep -o '"token":"[^"]*"' | sed 's/"token":"//;s/"//')
-          if [ -n "$R" ]; then
-            # Revision rebuild failed: only the new -r${R} tags belong to this run.
-            # The base/short version tags are immutable and owned by the prior
-            # release, so this run never pushed them — never delete them here.
-            TAGS="lego${L}-nginx${N}-r${R} lego${L}-nginx${N}-r${R}-alpine lego${L}-nginx${N}-r${R}-ubuntu"
-          else
-            # First release failed: delete the partially-pushed immutable version
-            # tags, otherwise a retry is permanently blocked by immutability.
-            TAGS="lego${L}-nginx${N} lego${L} lego${L}-nginx${N}-alpine lego${L}-alpine lego${L}-nginx${N}-ubuntu lego${L}-ubuntu"
-          fi
-          # latest* is the mutable production pointer; a failed run leaves it on
-          # the previous good image (or the next successful push overwrites it),
-          # so it is intentionally never deleted here.
-          for TAG in $TAGS; do
-            echo -n "Deleting ${BASE}:${TAG} ... "
-            curl -s -o /dev/null -w "%{http_code}\n" -X DELETE \
-              "https://hub.docker.com/v2/repositories/${BASE}/tags/${TAG}/" \
-              -H "Authorization: Bearer ${token}" || true
-          done
+          TAG: ${{ needs.rollback_plan.outputs.tag }}
+          HUB_REPO: ${{ needs.rollback_plan.outputs.hub_repo }}
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PAT: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
+        run: ./scripts/withdraw/image.sh
+
+  rollback_attestations:
+    name: "↩ 4. Remove the attestation records"
+    needs: [rollback_plan, rollback_confirm, rollback_image]
+    if: always() && needs.rollback_confirm.result == 'success' && needs.rollback_image.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Delete the attestations for each digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          DIGESTS: ${{ needs.rollback_plan.outputs.digests }}
+          KEPT: ${{ needs.rollback_image.outputs.kept }}
+        run: ./scripts/withdraw/attestations.sh
+
+  # The run stays red either way: the release did not happen. This job's own
+  # result says whether the rollback left anything behind.
+  rollback_verify:
+    name: "↩ Verify: nothing of this release is left"
+    needs: [rollback_plan, rollback_confirm, rollback_hub_page, rollback_issues, rollback_moving_tags, rollback_records, rollback_image, rollback_attestations]
+    if: always() && needs.rollback_confirm.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+      attestations: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check every location
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HUB_REPO: ${{ needs.rollback_plan.outputs.hub_repo }}
+          TAG: ${{ needs.rollback_plan.outputs.tag }}
+          DIGESTS: ${{ needs.rollback_plan.outputs.digests }}
+          PREV: ${{ needs.rollback_plan.outputs.prev }}
+          PREV_SAME: ${{ needs.rollback_plan.outputs.prev_same }}
+          KEPT: ${{ needs.rollback_image.outputs.kept }}
+          STEPS: >-
+            Docker Hub page ${{ needs.rollback_hub_page.result }}, issues ${{ needs.rollback_issues.result }},
+            moving tags ${{ needs.rollback_moving_tags.result }}, records ${{ needs.rollback_records.result }},
+            version tags ${{ needs.rollback_image.result }}, attestations ${{ needs.rollback_attestations.result }}
+        run: ./scripts/withdraw/verify.sh

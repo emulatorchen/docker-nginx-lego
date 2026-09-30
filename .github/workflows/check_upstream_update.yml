@@ -14,6 +14,13 @@ on:
     - cron: "0 10 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   check_upstream:
     name: "Check for upstream releases"
@@ -23,7 +30,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -31,7 +38,7 @@ jobs:
         id: synced
         run: |
           REF=$(cat .upstream-sync-ref | tr -d '[:space:]')
-          echo "ref=${REF}" >> $GITHUB_OUTPUT
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
           echo "Last synced upstream ref: ${REF}"
 
       - name: Get upstream latest release
@@ -41,9 +48,11 @@ jobs:
           TAG=$(echo "$RESPONSE" | jq -r '.tag_name')
           DATE=$(echo "$RESPONSE" | jq -r '.published_at | split("T")[0]')
           URL=$(echo "$RESPONSE" | jq -r '.html_url')
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "date=${DATE}" >> $GITHUB_OUTPUT
-          echo "url=${URL}" >> $GITHUB_OUTPUT
+          {
+            echo "tag=${TAG}"
+            echo "date=${DATE}"
+            echo "url=${URL}"
+          } >> "$GITHUB_OUTPUT"
           echo "Latest upstream release: ${TAG} (${DATE})"
 
       - name: Compare refs
@@ -53,16 +62,16 @@ jobs:
           LATEST: ${{ steps.upstream.outputs.tag }}
         run: |
           # Strip leading 'v' for semver comparison
-          SYNCED_V=$(echo "$SYNCED" | sed 's/^v//')
-          LATEST_V=$(echo "$LATEST" | sed 's/^v//')
+          SYNCED_V="${SYNCED#v}"
+          LATEST_V="${LATEST#v}"
           # sort -V puts the highest version last; if LATEST_V is not the highest,
           # we are at the same version or ahead — no action needed
           HIGHEST=$(printf '%s\n%s' "$SYNCED_V" "$LATEST_V" | sort -V | tail -1)
           if [ "$HIGHEST" != "$LATEST_V" ] || [ "$SYNCED_V" = "$LATEST_V" ]; then
-            echo "up_to_date=true" >> $GITHUB_OUTPUT
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
             echo "Up to date or ahead of upstream (ours: ${SYNCED}, upstream: ${LATEST})"
           else
-            echo "up_to_date=false" >> $GITHUB_OUTPUT
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
             echo "Upstream is newer: ${SYNCED} → ${LATEST}"
           fi
 
@@ -82,10 +91,10 @@ jobs:
             --jq ".[] | select(.title == \"${TITLE}\") | .title" \
             | head -1)
           if [ -n "$EXISTS" ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Issue already open for ${TAG}, skipping"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create upstream-sync label if missing
