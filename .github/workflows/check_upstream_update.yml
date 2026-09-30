@@ -37,7 +37,7 @@ jobs:
       - name: Get last synced upstream ref
         id: synced
         run: |
-          REF=$(cat .upstream-sync-ref | tr -d '[:space:]')
+          REF=$(tr -d '[:space:]' < .upstream-sync-ref)
           echo "ref=${REF}" >> "$GITHUB_OUTPUT"
           echo "Last synced upstream ref: ${REF}"
 
