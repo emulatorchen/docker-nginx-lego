@@ -6,17 +6,23 @@ on:
     - cron: "0 8 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   check_lego_version:
     name: "Check for new lego release"
     runs-on: ubuntu-latest
-    environment: automation
+    environment: cve-autofix
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -25,14 +31,14 @@ jobs:
         run: |
           LATEST=$(curl -s "https://api.github.com/repos/go-acme/lego/releases/latest" \
             | jq -r '.tag_name' | sed 's/^v//')
-          echo "version=${LATEST}" >> $GITHUB_OUTPUT
+          echo "version=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "Latest lego release: ${LATEST}"
 
       - name: Get pinned lego version from Dockerfile
         id: pinned
         run: |
           PINNED=$(grep -m1 'ARG LEGO_VERSION=' src/Dockerfile | cut -d= -f2)
-          echo "version=${PINNED}" >> $GITHUB_OUTPUT
+          echo "version=${PINNED}" >> "$GITHUB_OUTPUT"
           echo "Pinned lego version: ${PINNED}"
 
       - name: Compare versions
@@ -42,10 +48,10 @@ jobs:
           PINNED: ${{ steps.pinned.outputs.version }}
         run: |
           if [ "$LATEST" = "$PINNED" ]; then
-            echo "up_to_date=true" >> $GITHUB_OUTPUT
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
             echo "lego is up to date ($PINNED)"
           else
-            echo "up_to_date=false" >> $GITHUB_OUTPUT
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
             echo "New lego version available: $LATEST (current: $PINNED)"
           fi
 
