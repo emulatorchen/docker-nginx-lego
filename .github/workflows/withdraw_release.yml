@@ -1,0 +1,288 @@
+# Take a published release back: every trace of it that reached the outside.
+#
+# A release that fails before its version tags are created rolls itself back,
+# in its own run, with the same steps: scripts/withdraw/. This workflow is for
+# everything else, such as a finished release that turned out to be wrong, or a
+# rollback that has to be finished by hand.
+#
+# WHAT A RELEASE WRITES, AND WHICH STEP UNDOES IT
+#
+#   page      the Docker Hub page                       hub_page.sh
+#   CVE list  [SECURITY] issues and their comments      issues.sh
+#   moving    latest<sfx> and lego<L><sfx>              latest.sh    (moved back, not deleted)
+#   records   the GitHub release, its git tag, Latest   records.sh
+#   version   lego<L>-nginx<N>[-r<R>]<sfx>              image.sh
+#   proof     GitHub attestation records per digest     attestations.sh
+#
+# The version tags of a FINISHED release are immutable: Docker Hub lets no one
+# delete them, and this workflow reports them as staying, with their
+# attestation records. Everything else is taken back. Nobody can undo the
+# Sigstore transparency-log entry either.
+#
+# ORDER is the exact reverse of publication. ALL OR NOTHING: each step runs only
+# if the one before it succeeded, and every step skips what is already gone, so
+# a re-run finishes the job. Nothing here is a called workflow: a called
+# workflow's jobs never received their environments' secrets.
+name: "withdraw-release"
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to withdraw (e.g. lego5.4.1-nginx1.31.4)"
+        required: true
+        type: string
+      confirm:
+        description: "Type the same tag again to confirm. Everything this release published is removed."
+        required: true
+        type: string
+
+# Its own group: a withdrawal must not queue behind a release, and a release
+# must not be cancelled by one. Both are safe side by side.
+concurrency:
+  group: withdraw
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Not gated, and it runs first: the person approving is shown exactly what
+  # exists and what will happen to it.
+  plan:
+    name: "What will be withdrawn"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.p.outputs.tag }}
+      hub_repo: ${{ steps.p.outputs.hub_repo }}
+      digests: ${{ steps.p.outputs.digests }}
+      prev: ${{ steps.p.outputs.prev }}
+      prev_same: ${{ steps.p.outputs.prev_same }}
+      found: ${{ steps.p.outputs.found }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Typing it twice is the only protection against withdrawing the wrong
+      # release, and nothing after the approval can be taken back.
+      - name: Confirm the tag
+        id: c
+        env:
+          TAG: ${{ inputs.tag }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -uo pipefail
+          tag=$(printf '%s' "$TAG" | tr -d '[:space:]')
+          confirm=$(printf '%s' "$CONFIRM" | tr -d '[:space:]')
+          if [ -z "$tag" ] || [ "$tag" != "$confirm" ]; then
+            echo "::error::confirmation does not match: got '${confirm}', expected '${tag}'"
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Find what this release left behind
+        id: p
+        env:
+          TAG: ${{ steps.c.outputs.tag }}
+          HUB_REPO: emulator/docker-nginx-lego
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: ./scripts/withdraw/plan.sh
+
+  # The approval, in the environment that carries the reviewer. It holds no
+  # secrets and deletes nothing.
+  confirm:
+    name: "⚠️ Approve to WITHDRAW everything listed above"
+    needs: [plan]
+    if: needs.plan.outputs.found == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release-approval
+    permissions:
+      contents: read
+    steps:
+      - name: Record the decision
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: echo "withdrawal of ${TAG} approved"
+
+  withdraw_hub_page:
+    name: "0. Roll back the Docker Hub page"
+    needs: [plan, confirm]
+    if: always() && needs.confirm.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: dockerhub-metadata
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Restore the page to the live release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          PREV: ${{ needs.plan.outputs.prev }}
+          HUB_REPO: ${{ needs.plan.outputs.hub_repo }}
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PW: ${{ secrets.DOCKERHUB_PASSWORD }}
+        run: ./scripts/withdraw/hub_page.sh
+
+  withdraw_issues:
+    name: "0. Roll back the CVE issues"
+    needs: [plan, confirm, withdraw_hub_page]
+    if: always() && needs.confirm.result == 'success' && needs.withdraw_hub_page.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Close the issues it opened, delete its comments
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: ./scripts/withdraw/issues.sh
+
+  withdraw_moving_tags:
+    name: "1. Move latest and the short tags back"
+    needs: [plan, confirm, withdraw_issues]
+    if: always() && needs.confirm.result == 'success' && needs.withdraw_issues.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Move them back, or remove them
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          DIGESTS: ${{ needs.plan.outputs.digests }}
+          PREV: ${{ needs.plan.outputs.prev }}
+          PREV_SAME: ${{ needs.plan.outputs.prev_same }}
+          HUB_REPO: ${{ needs.plan.outputs.hub_repo }}
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PAT: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
+        run: ./scripts/withdraw/latest.sh
+
+  withdraw_records:
+    name: "2. Remove the GitHub release and its tag"
+    needs: [plan, confirm, withdraw_moving_tags]
+    if: always() && needs.confirm.result == 'success' && needs.withdraw_moving_tags.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Delete the release and its tag, hand back Latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          PREV: ${{ needs.plan.outputs.prev }}
+        run: ./scripts/withdraw/records.sh
+
+  # A finished release's version tags are immutable: this reports them as
+  # staying, and their attestation records stay with them.
+  withdraw_image:
+    name: "3. Remove the version tags"
+    needs: [plan, confirm, withdraw_records]
+    if: always() && needs.confirm.result == 'success' && needs.withdraw_records.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      kept: ${{ steps.i.outputs.kept }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Delete the tags, unless they are immutable
+        id: i
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          HUB_REPO: ${{ needs.plan.outputs.hub_repo }}
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_PAT: ${{ secrets.DOCKERHUB_RELEASE_TOKEN }}
+        run: ./scripts/withdraw/image.sh
+
+  withdraw_attestations:
+    name: "4. Remove the attestation records"
+    needs: [plan, confirm, withdraw_image]
+    if: always() && needs.confirm.result == 'success' && needs.withdraw_image.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Delete the attestations for each digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          DIGESTS: ${{ needs.plan.outputs.digests }}
+          KEPT: ${{ needs.withdraw_image.outputs.kept }}
+        run: ./scripts/withdraw/attestations.sh
+
+  verify:
+    name: "Verify: nothing of this release is left"
+    needs: [plan, confirm, withdraw_hub_page, withdraw_issues, withdraw_moving_tags, withdraw_records, withdraw_image, withdraw_attestations]
+    if: always() && needs.confirm.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+      attestations: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check every location
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HUB_REPO: ${{ needs.plan.outputs.hub_repo }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          DIGESTS: ${{ needs.plan.outputs.digests }}
+          PREV: ${{ needs.plan.outputs.prev }}
+          PREV_SAME: ${{ needs.plan.outputs.prev_same }}
+          KEPT: ${{ needs.withdraw_image.outputs.kept }}
+          STEPS: >-
+            Docker Hub page ${{ needs.withdraw_hub_page.result }}, issues ${{ needs.withdraw_issues.result }},
+            moving tags ${{ needs.withdraw_moving_tags.result }}, records ${{ needs.withdraw_records.result }},
+            version tags ${{ needs.withdraw_image.result }}, attestations ${{ needs.withdraw_attestations.result }}
+        run: ./scripts/withdraw/verify.sh
