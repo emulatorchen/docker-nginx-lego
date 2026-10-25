@@ -1,4 +1,4 @@
-FROM nginx:1.31.4@sha256:b34848eff6db786b6b1282d3a9c3fd0b5563dfb6d261df4923378b419e0d24f0
+FROM nginx:1.31.7@sha256:bc4cad49969aaf95eb4eecec5572846f86e59f1e8332aba36ed64b91aff8b724
 LABEL maintainer="emulatorchen"
 
 # FORK: Python/certbot/Rust removed. Only the static lego binary is installed.
