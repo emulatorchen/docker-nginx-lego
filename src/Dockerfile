@@ -10,7 +10,7 @@ LABEL maintainer="emulatorchen"
 #   - Review COPY scripts/ and lines after it for nginx-layer changes.
 #   - Skip all certbot/Python/Rust changes — they are intentionally removed.
 
-ARG LEGO_VERSION=5.4.1
+ARG LEGO_VERSION=5.5.2
 ARG TARGETARCH
 ARG TARGETVARIANT
 
@@ -66,22 +66,11 @@ RUN chmod +x -R /scripts && \
 # --- CVE security pins (auto-managed) ---
 # Each pin is a minimum source version: install the candidate, then check it.
 RUN set -- \
-        'bsdutils>=2.41.5-0+deb13u1' \
-        'libaom3>=3.12.1-1+deb13u1' \
-        'libblkid1>=2.41.5-0+deb13u1' \
-        'libde265-0>=1.0.15-1+deb13u2' \
+        'libbrotli1>=1.1.0-2+deb13u1' \
         'libexpat1>=2.8.2-1~deb13u1' \
         'libheif-plugin-dav1d>=1.19.8-1+deb13u1' \
         'libheif-plugin-libde265>=1.19.8-1+deb13u1' \
         'libheif1>=1.19.8-1+deb13u1' \
-        'liblastlog2-2>=2.41.5-0+deb13u1' \
-        'libmount1>=2.41.5-0+deb13u1' \
-        'libsmartcols1>=2.41.5-0+deb13u1' \
-        'libtiff6>=4.7.0-3+deb13u3' \
-        'libuuid1>=2.41.5-0+deb13u1' \
-        'login>=2.41.5-0+deb13u1' \
-        'mount>=2.41.5-0+deb13u1' \
-        'util-linux>=2.41.5-0+deb13u1' \
     && apt-get update \
     && apt-get install -y --no-install-recommends $(for pin; do echo "${pin%%>=*}"; done) \
     && for pin; do \
