@@ -796,6 +796,7 @@ jobs:
           gh pr create \
             --title "fix: auto-fix CVEs from vulnerability scan (${TODAY})" \
             --body "$(cat "$PR_BODY_FILE")" \
+            --head "$BRANCH" \
             --base master \
             --label security
           rm -f "$PR_BODY_FILE"
