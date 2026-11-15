@@ -685,14 +685,21 @@ jobs:
           done
           rm -rf "$FAIL_DIR"
 
-          # Bump nginx FROM version if nginx package CVEs found
+          # Bump nginx FROM version if nginx package CVEs found. Only the tag changes;
+          # base_digests.sh then re-pins the digest the new tag points at, so the
+          # images stay pinned. A tag that does not exist yet leaves nginx as it was.
           if [ -n "$FIXABLE_NGINX" ]; then
             RAW_VER=$(echo "$FIXABLE_NGINX" | grep -oE '\([^)]+\)' | head -1 | tr -d '()')
             NGINX_VER=$(echo "$RAW_VER" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
             if [ -n "$NGINX_VER" ]; then
-              sed -i "s|^FROM nginx:[^ ]*|FROM nginx:${NGINX_VER}|" src/Dockerfile
-              sed -i "s|^FROM nginx:[^ ]*-alpine[^ ]*|FROM nginx:${NGINX_VER}-alpine|" \
-                src/Dockerfile-alpine
+              cp src/Dockerfile src/Dockerfile-alpine src/Dockerfile-ubuntu "$RUNNER_TEMP/"
+              sed -i "s|^FROM nginx:[^@ -]*@|FROM nginx:${NGINX_VER}@|" src/Dockerfile
+              sed -i "s|^FROM nginx:[^@ ]*-alpine@|FROM nginx:${NGINX_VER}-alpine@|" src/Dockerfile-alpine
+              sed -i "s/^ARG NGINX_VERSION=.*/ARG NGINX_VERSION=${NGINX_VER}/" src/Dockerfile-ubuntu
+              if ! .github/base_digests.sh --update; then
+                echo "::warning::nginx ${NGINX_VER} has no image to pin yet; leaving nginx unchanged"
+                cp "$RUNNER_TEMP/Dockerfile" "$RUNNER_TEMP/Dockerfile-alpine" "$RUNNER_TEMP/Dockerfile-ubuntu" src/
+              fi
             fi
           fi
 
