@@ -79,6 +79,7 @@ upstream author][pr373] — thanks for the excellent foundation.
 
 ### Advanced
 - `LEGO_EXTRA_CERTS`: Certificates to obtain and renew that no server block references, because something other than this Nginx serves them. Format `<cert_name>=<domain>[,<domain>...][;<cert_name>=...]`. See [Certificates Nginx Does Not Serve](./docs/advanced_usage.md#certificates-nginx-does-not-serve).
+- `NGINX_LEGO_CERT_GROUP`: A group name or gid given read access to the issued certificates and keys, so another container can use them. The container must be a member of that group (`--group-add`). See [Share Certificates With Another Container](./docs/advanced_usage.md#share-certificates-with-another-container).
 - `NGINX_INCLUDE_MAX_DEPTH`: How many levels of `include` directives to follow when reading a config file (default: `10`)
 - `NGINX_PREFIX`: Base directory used to resolve relative `include` paths (default: `/etc/nginx`, matching the image's nginx prefix)
 - `LEGO_DEFAULT_PROVIDER`: Default DNS provider for all certs without an explicit `.dns-<provider>` suffix (e.g. `cloudflare`). See [lego providers](./docs/lego_providers.md).

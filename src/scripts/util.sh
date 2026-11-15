@@ -657,3 +657,69 @@ auto_enable_configs() {
         fi
     done < <(find -L /etc/nginx/conf.d/ -name "*.conf*" -type f -print0)
 }
+
+# FORK: this function does not exist upstream. Do not overwrite this file from
+# upstream wholesale; see UPSTREAM_SYNC.md.
+#
+# Give the group named in NGINX_LEGO_CERT_GROUP read access to the certificates,
+# so another container (a TLS terminator in front of this one, say) can use them
+# without running as this container's user or as root.
+#
+# lego writes every key 0600 inside 0700 directories. This opens exactly the way
+# to the certificate files: certificates/, live/ and each live/<name>/ become
+# 0750, and the certificates and keys 0640, all owned by that group. The local CA
+# writes real files into live/<name>/, so those are shared as well; lego only
+# leaves symlinks there. The ACME account key (accounts/), lego's metadata
+# (*.json), DNS credentials (*.ini), archive/ and dhparams/ are never touched, and
+# no symlink is ever followed, so nothing outside these directories can change.
+#
+# Unset or empty leaves every permission as lego wrote it. A group this process
+# does not belong to cannot be handed out, so that is reported with the fix and
+# the files stay private.
+#
+# $1: Root of the certificate store (default: LEGO_PATH, or /etc/letsencrypt).
+share_certificates() {
+    local group="${NGINX_LEGO_CERT_GROUP:-}"
+    local root="${1:-${LEGO_PATH:-/etc/letsencrypt}}"
+    if [ -z "${group}" ]; then
+        return 0
+    fi
+
+    # Each find tolerates a missing directory: the process substitution inherits
+    # 'set -e' from callers such as run_local_ca.sh, so one failing find (the
+    # local CA has no certificates/) would otherwise silently skip the rest.
+    local -a paths=()
+    local path
+    while IFS= read -r -d $'\0' path; do
+        paths+=("${path}")
+    done < <(
+        find -P "${root}/certificates" -maxdepth 0 -type d -print0 2>/dev/null || true
+        find -P "${root}/live" -maxdepth 1 -type d -print0 2>/dev/null || true
+        find -P "${root}/certificates" -maxdepth 1 -type f \( -name '*.crt' -o -name '*.key' \) -print0 2>/dev/null || true
+        find -P "${root}/live" -mindepth 2 -maxdepth 2 -type f -name '*.pem' -print0 2>/dev/null || true
+    )
+    if [ ${#paths[@]} -eq 0 ]; then
+        debug "No certificates in '${root}' to share with group '${group}' yet"
+        return 0
+    fi
+
+    local mode out refused=""
+    for path in "${paths[@]}"; do
+        if [ -d "${path}" ]; then mode=750; else mode=640; fi
+        # Only widen the mode once the group is right, or a refused chgrp would
+        # leave the key readable by whatever group it already had.
+        if ! out="$(chgrp "${group}" "${path}" 2>&1)"; then
+            refused="${out}"
+            continue
+        fi
+        chmod "${mode}" "${path}"
+        debug "Shared '${path}' with group '${group}' (${mode})"
+    done
+
+    if [ -n "${refused}" ]; then
+        error "Could not give the certificates in '${root}' to group '${group}': ${refused}"
+        error "This container runs as uid $(id -u) with groups '$(id -G)' and can only hand files to one of them. Add the group to the container (docker run --group-add ${group}, compose 'group_add', Kubernetes 'supplementalGroups'), or set NGINX_LEGO_CERT_GROUP to a group it already has."
+        return 1
+    fi
+    info "Certificates in '${root}' are readable by group '${group}'"
+}

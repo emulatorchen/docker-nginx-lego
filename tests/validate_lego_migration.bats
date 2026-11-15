@@ -22,6 +22,8 @@ FIXTURES_DIR="${BATS_TEST_DIRNAME}/fixtures/lego_migration"
 # here so the relative `source util.sh` inside run_lego.sh resolves correctly.
 # ---------------------------------------------------------------------------
 setup() {
+    # Bats before 1.4, which CI runs, has no BATS_TEST_TMPDIR.
+    : "${BATS_TEST_TMPDIR:=$(mktemp -d)}"
     export CERTBOT_EMAIL="test@example.com"
     export STAGING="0"
     export LEGO_PATH="/tmp/lego-test-$$"
@@ -287,4 +289,39 @@ LEGO_MOCK_EOF
     dns_line=$(grep -nx -- "--dns" "${LEGO_ARGS_FILE}" | head -n1 | cut -d: -f1)
     [ -n "${dns_line}" ]
     [ "$(sed -n "$((dns_line + 1))p" "${LEGO_ARGS_FILE}")" = "cloudflare" ]
+}
+
+# What the mock lego stands in for: an issued key, 0600 in a 0700 directory.
+_issue_fake_cert() {
+    export LEGO_PATH="${BATS_TEST_TMPDIR}/lego"
+    mkdir -p "${LEGO_PATH}/certificates"
+    echo crt > "${LEGO_PATH}/certificates/example.com.crt"
+    echo key > "${LEGO_PATH}/certificates/example.com.key"
+    chmod 700 "${LEGO_PATH}/certificates"
+    chmod 600 "${LEGO_PATH}/certificates/example.com.crt" "${LEGO_PATH}/certificates/example.com.key"
+}
+
+@test "get_certificate_lego: shares the issued key with NGINX_LEGO_CERT_GROUP on every run" {
+    _install_lego_mock
+    _issue_fake_cert
+    local group
+    if [ "$(id -u)" -eq 0 ]; then group=4242; else group="$(id -g)"; fi
+    export NGINX_LEGO_CERT_GROUP="${group}"
+
+    run get_certificate_lego "example.com.dns-cloudflare" "example.com" "ecdsa"
+
+    [ "${status}" -eq 0 ]
+    [ "$(stat -c '%a %g' "${LEGO_PATH}/certificates/example.com.key")" = "640 ${group}" ]
+    [ "$(stat -c '%a %g' "${LEGO_PATH}/live/example.com.dns-cloudflare")" = "750 ${group}" ]
+}
+
+@test "get_certificate_lego: leaves the issued key private when NGINX_LEGO_CERT_GROUP is unset" {
+    _install_lego_mock
+    _issue_fake_cert
+    unset NGINX_LEGO_CERT_GROUP
+
+    run get_certificate_lego "example.com.dns-cloudflare" "example.com" "ecdsa"
+
+    [ "${status}" -eq 0 ]
+    [ "$(stat -c '%a' "${LEGO_PATH}/certificates/example.com.key")" = "600" ]
 }

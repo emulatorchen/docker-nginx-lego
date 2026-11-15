@@ -30,6 +30,13 @@ debug "Debug messages are enabled"
 symlink_user_configs
 auto_enable_configs
 
+# FORK: not present upstream. Do not drop when syncing this file; see
+# UPSTREAM_SYNC.md.
+#
+# Certificates issued before NGINX_LEGO_CERT_GROUP was set get the group now,
+# not only at their next renewal.
+share_certificates || true
+
 # Start Nginx without its daemon mode (and save its PID).
 if [ 1 = "${DEBUG}" ]; then
     info "Starting the Nginx service in debug mode"

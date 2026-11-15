@@ -6,6 +6,12 @@ INCLUDES_DIR="${FIXTURES_DIR}/nginx_config/includes"
 
 load "${SCRIPTS_DIR}/util.sh"
 
+# Bats before 1.4, which CI runs, has no BATS_TEST_TMPDIR; give each test its own
+# instead of letting the paths fall back to the filesystem root.
+setup() {
+  : "${BATS_TEST_TMPDIR:=$(mktemp -d)}"
+}
+
 
 @test "is_ipv4 detects what is an IPv6 address" {
   local ipv4addresses=($(<"${FIXTURES_DIR}/ipv4_addresses.txt"))
@@ -839,4 +845,175 @@ load "${SCRIPTS_DIR}/util.sh"
   [ "${edge[0]}" == "example.org" ]
   [ "${edge[1]}" == "www.example.org" ]
   [ "${certificates[api-cert]}" == "api.example.org " ]
+}
+
+
+# share_certificates gives the group in NGINX_LEGO_CERT_GROUP read access to the
+# certificates and keys, so another container can use them without running as
+# this container's user. lego itself writes every key 0600 in 0700 directories.
+
+# Root may hand files to any group; anyone else only to a group of their own.
+cert_test_group() {
+  if [ "$(id -u)" -eq 0 ]; then echo 4242; else id -g; fi
+}
+
+# A certificate store as lego and the local CA leave it: 0700 dirs, 0600 files.
+make_cert_store() {
+  local root="$1" f
+  mkdir -p "${root}/certificates" "${root}/live/lego-cert" "${root}/live/local-cert" \
+           "${root}/accounts/acme/keys" "${root}/archive" "${root}/dhparams"
+  for f in example.org.crt example.org.key example.org.issuer.crt example.org.json; do
+    echo "${f}" > "${root}/certificates/${f}"
+  done
+  ln -s "${root}/certificates/example.org.crt" "${root}/live/lego-cert/fullchain.pem"
+  ln -s "${root}/certificates/example.org.key" "${root}/live/lego-cert/privkey.pem"
+  echo key > "${root}/live/local-cert/privkey.pem"
+  echo chain > "${root}/live/local-cert/fullchain.pem"
+  echo account > "${root}/accounts/acme/keys/account.key"
+  echo old > "${root}/archive/example.org.key"
+  echo dh > "${root}/dhparams/dhparam.pem"
+  echo "CLOUDFLARE_DNS_API_TOKEN=secret" > "${root}/cloudflare.ini"
+  find "${root}" -type d -exec chmod 700 {} +
+  find "${root}" -type f -exec chmod 600 {} +
+}
+
+# Mode and group of every path in a store, symlinks reported as themselves.
+store_state() {
+  (cd "$1" && find . -exec stat -c '%n %a %g' {} + | sort)
+}
+
+@test "share_certificates leaves everything untouched when NGINX_LEGO_CERT_GROUP is unset" {
+  local root="${BATS_TEST_TMPDIR}/store" before
+  make_cert_store "${root}"
+  before="$(store_state "${root}")"
+
+  unset NGINX_LEGO_CERT_GROUP
+  run share_certificates "${root}"
+
+  [ "${status}" -eq 0 ]
+  [ "$(store_state "${root}")" == "${before}" ]
+}
+
+@test "share_certificates opens the path to lego's certificates and keys to the group" {
+  local root="${BATS_TEST_TMPDIR}/store" group
+  group="$(cert_test_group)"
+  make_cert_store "${root}"
+
+  NGINX_LEGO_CERT_GROUP="${group}" share_certificates "${root}"
+
+  [ "$(stat -c '%a %g' "${root}/certificates")" == "750 ${group}" ]
+  [ "$(stat -c '%a %g' "${root}/live")" == "750 ${group}" ]
+  [ "$(stat -c '%a %g' "${root}/live/lego-cert")" == "750 ${group}" ]
+  [ "$(stat -c '%a %g' "${root}/certificates/example.org.crt")" == "640 ${group}" ]
+  [ "$(stat -c '%a %g' "${root}/certificates/example.org.key")" == "640 ${group}" ]
+  [ "$(stat -c '%a %g' "${root}/certificates/example.org.issuer.crt")" == "640 ${group}" ]
+}
+
+@test "share_certificates shares the files the local CA writes straight into live/" {
+  local root="${BATS_TEST_TMPDIR}/store" group
+  group="$(cert_test_group)"
+  make_cert_store "${root}"
+
+  NGINX_LEGO_CERT_GROUP="${group}" share_certificates "${root}"
+
+  [ "$(stat -c '%a %g' "${root}/live/local-cert")" == "750 ${group}" ]
+  [ "$(stat -c '%a %g' "${root}/live/local-cert/privkey.pem")" == "640 ${group}" ]
+  [ "$(stat -c '%a %g' "${root}/live/local-cert/fullchain.pem")" == "640 ${group}" ]
+}
+
+@test "share_certificates shares a local-CA store that has no certificates/ directory" {
+  # The local CA never creates certificates/. With 'set -e' active, as in bats
+  # and in run_local_ca.sh, a failing find for it must not skip the live/ files.
+  local root="${BATS_TEST_TMPDIR}/store" group
+  group="$(cert_test_group)"
+  make_cert_store "${root}"
+  rm -rf "${root}/certificates" "${root}/live/lego-cert"
+
+  NGINX_LEGO_CERT_GROUP="${group}" share_certificates "${root}"
+
+  [ "$(stat -c '%a %g' "${root}/live")" == "750 ${group}" ]
+  [ "$(stat -c '%a %g' "${root}/live/local-cert/privkey.pem")" == "640 ${group}" ]
+}
+
+@test "share_certificates keeps the account key, metadata, credentials, archive and dhparams private" {
+  local root="${BATS_TEST_TMPDIR}/store" before after
+  local paths=(. accounts accounts/acme/keys/account.key archive archive/example.org.key
+               dhparams dhparams/dhparam.pem certificates/example.org.json cloudflare.ini)
+  make_cert_store "${root}"
+  before="$(cd "${root}" && stat -c '%n %a %g' "${paths[@]}")"
+
+  NGINX_LEGO_CERT_GROUP="$(cert_test_group)" share_certificates "${root}"
+
+  after="$(cd "${root}" && stat -c '%n %a %g' "${paths[@]}")"
+  [ "${after}" == "${before}" ]
+}
+
+@test "share_certificates is idempotent" {
+  local root="${BATS_TEST_TMPDIR}/store" first
+  make_cert_store "${root}"
+  export NGINX_LEGO_CERT_GROUP="$(cert_test_group)"
+
+  share_certificates "${root}"
+  first="$(store_state "${root}")"
+  run share_certificates "${root}"
+
+  [ "${status}" -eq 0 ]
+  [ "$(store_state "${root}")" == "${first}" ]
+}
+
+@test "share_certificates is quiet about a store that has no certificates yet" {
+  local root="${BATS_TEST_TMPDIR}/empty"
+  mkdir -p "${root}"
+  export NGINX_LEGO_CERT_GROUP="$(cert_test_group)"
+
+  run share_certificates "${root}"
+
+  [ "${status}" -eq 0 ]
+  ! grep -q "\[error\]" <<< "${output}"
+}
+
+@test "share_certificates never follows a symlink out of the store" {
+  local root="${BATS_TEST_TMPDIR}/store" outside="${BATS_TEST_TMPDIR}/outside.key" before
+  make_cert_store "${root}"
+  echo secret > "${outside}"
+  chmod 600 "${outside}"
+  ln -s "${outside}" "${root}/live/lego-cert/extra.pem"
+  ln -s "${outside}" "${root}/certificates/linked.key"
+  before="$(stat -c '%a %g' "${outside}")"
+
+  NGINX_LEGO_CERT_GROUP="$(cert_test_group)" share_certificates "${root}"
+
+  [ "$(stat -c '%a %g' "${outside}")" == "${before}" ]
+}
+
+@test "share_certificates reports a refused chgrp, names the fix and keeps the key private" {
+  local root="${BATS_TEST_TMPDIR}/store" shim="${BATS_TEST_TMPDIR}/shim"
+  make_cert_store "${root}"
+  # What a non-root process gets when it is not a member of the group.
+  mkdir -p "${shim}"
+  printf '#!/bin/sh\necho "chgrp: changing group of %s: Operation not permitted" >&2\nexit 1\n' \
+    "'\$2'" > "${shim}/chgrp"
+  chmod +x "${shim}/chgrp"
+  export NGINX_LEGO_CERT_GROUP=4242
+
+  PATH="${shim}:${PATH}" run share_certificates "${root}"
+
+  [ "${status}" -eq 1 ]
+  grep -q "\[error\]" <<< "${output}"
+  grep -q "Operation not permitted" <<< "${output}"
+  grep -q -- "--group-add 4242" <<< "${output}"
+  [ "$(stat -c '%a' "${root}/certificates/example.org.key")" == "600" ]
+  [ "$(stat -c '%a' "${root}/certificates")" == "700" ]
+}
+
+@test "share_certificates reports a group that does not exist" {
+  local root="${BATS_TEST_TMPDIR}/store"
+  make_cert_store "${root}"
+  export NGINX_LEGO_CERT_GROUP=no-such-group-for-this-test
+
+  run share_certificates "${root}"
+
+  [ "${status}" -eq 1 ]
+  grep -q "\[error\]" <<< "${output}"
+  [ "$(stat -c '%a' "${root}/certificates/example.org.key")" == "600" ]
 }

@@ -256,6 +256,10 @@ get_certificate_lego() {
     ln -sf "${lego_certs_dir}/${lego_cert_name}.key"        "${live_dir}/privkey.pem"
     ln -sf "${lego_certs_dir}/${lego_cert_name}.issuer.crt" "${live_dir}/chain.pem"
     debug "Symlinked lego certs into '${live_dir}'"
+
+    # Give NGINX_LEGO_CERT_GROUP read access after every issue and renewal. A
+    # failure is logged by share_certificates and never fails the renewal.
+    share_certificates "${LEGO_PATH}" || true
 }
 
 # ---------------------------------------------------------------------------

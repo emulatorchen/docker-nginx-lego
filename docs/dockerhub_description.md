@@ -60,6 +60,7 @@ ssl_certificate_key /etc/letsencrypt/live/example.com.dns-route53/privkey.pem;
 | `CERTBOT_DNS_CREDENTIALS_DIR` | `/etc/letsencrypt` | Directory for `.ini` credential files |
 | `RENEWAL_INTERVAL` | `8d` | Time between renewal checks |
 | `USE_ECDSA` | `1` | ECDSA certs (set to `0` for RSA only) |
+| `NGINX_LEGO_CERT_GROUP` | — | Group (name or gid) given read access to the certificates, for another container ([how](https://github.com/emulatorchen/docker-nginx-lego/blob/master/docs/advanced_usage.md#share-certificates-with-another-container)) |
 
 ## Volumes
 
