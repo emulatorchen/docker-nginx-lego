@@ -1,5 +1,21 @@
 # Changelog
 
+### lego5.6.0-nginx1.31.8
+- **Breaking:** every image (Debian, Alpine and Ubuntu, on every architecture)
+  runs as the unprivileged user `101:101` instead of root. An existing
+  `/etc/letsencrypt` volume or host directory needs a one-time
+  `chown -R 101:101`; the container stops at startup with that command when it
+  cannot write it. See
+  [Upgrading to the Non-Root Image](../README.md#upgrading-to-the-non-root-image)
+  and [Running as Non-Root](./good_to_know.md#running-as-non-root).
+- New `NGINX_LEGO_CERT_GROUP`: gives a group read access to the certificates
+  and keys so another container can use them
+  ([details](./advanced_usage.md#share-certificates-with-another-container)).
+- lego 5.4.1 → 5.6.0.
+- Base images are re-pinned when upstream rebuilds them: a weekly
+  `check-base-digests` workflow opens a PR listing the CVEs the new bases fix.
+  The CVE auto-fix no longer drops the digest pin when it bumps nginx.
+
 ### fork: lego-only migration (emulatorchen/docker-nginx-lego)
 - Replaced certbot entirely with [lego](https://github.com/go-acme/lego) — a
   static Go binary supporting 150+ DNS providers via HTTP-01 (webroot) and DNS-01.

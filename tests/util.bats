@@ -1017,3 +1017,52 @@ store_state() {
   grep -q "\[error\]" <<< "${output}"
   [ "$(stat -c '%a' "${root}/certificates/example.org.key")" == "600" ]
 }
+
+
+# check_storage_writable runs before anything else at startup: the image no
+# longer runs as root, so a store written by an older root-run container has to
+# be handed over once, and the container must say so instead of failing later.
+
+@test "check_storage_writable accepts a store this user can write" {
+  local root="${BATS_TEST_TMPDIR}/store"
+  make_cert_store "${root}"
+
+  run check_storage_writable "${root}"
+
+  [ "${status}" -eq 0 ]
+  [ -z "${output}" ]
+}
+
+@test "check_storage_writable names the path it cannot write and the exact chown" {
+  [ "$(id -u)" -ne 0 ] || skip "root can write anything; the smoke test covers this as uid 101"
+  local root="${BATS_TEST_TMPDIR}/store"
+  make_cert_store "${root}"
+  chmod 500 "${root}/certificates"
+
+  run check_storage_writable "${root}"
+
+  [ "${status}" -eq 1 ]
+  grep -q "${root}/certificates" <<< "${output}"
+  grep -q "chown -R $(id -u):$(id -g) ${root}" <<< "${output}"
+}
+
+@test "check_storage_writable does not require write access to credentials" {
+  local root="${BATS_TEST_TMPDIR}/store"
+  make_cert_store "${root}"
+  # DNS credentials are often mounted read-only; they only need to be readable.
+  chmod 400 "${root}/cloudflare.ini"
+
+  run check_storage_writable "${root}"
+
+  [ "${status}" -eq 0 ]
+}
+
+@test "check_storage_writable is not tripped by a dangling symlink" {
+  local root="${BATS_TEST_TMPDIR}/store"
+  make_cert_store "${root}"
+  ln -s "${root}/certificates/missing.issuer.crt" "${root}/live/lego-cert/chain.pem"
+
+  run check_storage_writable "${root}"
+
+  [ "${status}" -eq 0 ]
+}

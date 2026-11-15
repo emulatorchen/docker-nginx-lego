@@ -6,14 +6,22 @@ and [lego](https://github.com/go-acme/lego). No Python. No certbot. Just a stati
 Fork of [JonasAlfredsson/docker-nginx-certbot](https://github.com/JonasAlfredsson/docker-nginx-certbot)
 with certbot replaced by lego — endorsed by the upstream author.
 
+> **⚠️ Breaking change from `lego5.6.0-nginx1.31.8`: the image no longer runs as root.**
+> Every image now runs as the unprivileged user `101:101`. `latest`, `latest-alpine`
+> and `latest-ubuntu` move to it on release; `lego5.4.1-nginx1.31.8` and older still
+> run as root. **An existing setup needs a one-time migration**, most often:
+> `docker run --rm --user 0 -v <volume-or-dir>:/etc/letsencrypt emulator/docker-nginx-lego chown -R 101:101 /etc/letsencrypt`.
+> Read [Upgrading to the Non-Root Image](https://github.com/emulatorchen/docker-nginx-lego#upgrading-to-the-non-root-image)
+> before you pull.
+
 ## Quick start
 
 ```bash
 docker run -d -p 80:80 -p 443:443 \
   -e CERTBOT_EMAIL=your@email.com \
-  -v $(pwd)/letsencrypt:/etc/letsencrypt \
+  -v nginx_secrets:/etc/letsencrypt \
   -v $(pwd)/user_conf.d:/etc/nginx/user_conf.d:ro \
-  emulator/docker-nginx-lego:lego5.0.4-nginx1.31.1
+  emulator/docker-nginx-lego:lego5.6.0-nginx1.31.8
 ```
 
 Place your nginx server configs in `user_conf.d/`. The container handles cert
@@ -66,7 +74,7 @@ ssl_certificate_key /etc/letsencrypt/live/example.com.dns-route53/privkey.pem;
 
 | Path | Purpose |
 |---|---|
-| `/etc/letsencrypt` | Certificates, lego accounts, DH params (persist this) |
+| `/etc/letsencrypt` | Certificates, lego accounts, DH params (persist this; writable by uid 101) |
 | `/etc/nginx/user_conf.d` | Your nginx server configs (mount read-only) |
 
 ## Architectures

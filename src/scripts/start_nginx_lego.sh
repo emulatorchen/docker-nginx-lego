@@ -24,6 +24,16 @@ trap "clean_exit" EXIT
 # If the environment variable `DEBUG=1` is set, then this message is printed.
 debug "Debug messages are enabled"
 
+# FORK: not present upstream. Do not drop when syncing this file; see
+# UPSTREAM_SYNC.md.
+#
+# The image runs as an unprivileged user. Stop here, with the command that fixes
+# it, when the certificate storage still belongs to someone else (root, from an
+# older image), rather than failing every renewal later.
+if ! check_storage_writable; then
+    exit 1
+fi
+
 # Immediately symlink files to the correct locations and then run
 # 'auto_enable_configs' so that Nginx is in a runnable state
 # This will temporarily disable any misconfigured servers.

@@ -119,6 +119,10 @@ load_credentials() {
         error "Credentials file '${creds_file}' not found"
         return 1
     fi
+    if [ ! -r "${creds_file}" ]; then
+        error "Credentials file '${creds_file}' is not readable by this container's user (uid $(id -u)); give it to that user, e.g. chown $(id -u) '${creds_file}' and keep it chmod 0600"
+        return 1
+    fi
 
     local detected_provider=""
     local -a env_args=()

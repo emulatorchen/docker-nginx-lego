@@ -325,3 +325,18 @@ _issue_fake_cert() {
     [ "${status}" -eq 0 ]
     [ "$(stat -c '%a' "${LEGO_PATH}/certificates/example.com.key")" = "600" ]
 }
+
+@test "load_credentials: an unreadable credentials file names the fix" {
+    [ "$(id -u)" -ne 0 ] || skip "root can read anything; the smoke test covers this as uid 101"
+    local dir="${BATS_TEST_TMPDIR}/creds"
+    mkdir -p "${dir}"
+    echo "CLOUDFLARE_DNS_API_TOKEN=secret" > "${dir}/cloudflare.ini"
+    chmod 000 "${dir}/cloudflare.ini"
+    export CERTBOT_DNS_CREDENTIALS_DIR="${dir}"
+
+    run load_credentials "cloudflare" ""
+
+    [ "${status}" -ne 0 ]
+    echo "${output}" | grep -q "not readable"
+    echo "${output}" | grep -q "uid $(id -u)"
+}

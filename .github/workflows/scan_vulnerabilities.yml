@@ -612,10 +612,11 @@ jobs:
           echo done
           EOF
             strip_os_pins "$DOCKERFILE" > "${DOCKERFILE}.unpinned"
+            # The image runs as uid 101; the probe needs root for apt-get update.
             # shellcheck disable=SC2086
             if docker buildx build --platform linux/amd64 --load -t cve-unpinned \
                  -f "${DOCKERFILE}.unpinned" "$(dirname "$DOCKERFILE")" > /dev/null 2>&1 \
-               && OUT=$(docker run --rm -i --entrypoint sh cve-unpinned -s "$PM" $PINS < "$PROBE") \
+               && OUT=$(docker run --rm -i --user 0 --entrypoint sh cve-unpinned -s "$PM" $PINS < "$PROBE") \
                && [ "$(echo "$OUT" | tail -1)" = "done" ]; then
               echo "$OUT" | sed -n 's/^keep //p'
             else

@@ -31,6 +31,7 @@ for _ in $(seq 1 15); do
     sleep 2
 done
 [ "$(mode_group "${key}")" = "640 ${group}" ] || fail "${key} is $(mode_group "${key}"), not 640 ${group}"
+[ "$(docker exec "${container}" stat -c '%u' "${key}")" = 101 ] || fail "${key} does not belong to uid 101"
 [ "$(mode_group "$(dirname "${key}")")" = "750 ${group}" ] || fail "$(dirname "${key}") is not 750 ${group}"
 [ "$(mode_group "/etc/letsencrypt/live/${cert}")" = "750 ${group}" ] || fail "live/${cert} is not 750 ${group}"
 [ "$(docker exec "${container}" stat -c '%a' /etc/letsencrypt/accounts)" = 700 ] || fail "accounts/ is no longer 0700"

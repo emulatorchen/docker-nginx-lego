@@ -1,5 +1,13 @@
 # docker-nginx-lego
 
+> [!WARNING]
+> **Breaking change from `lego5.6.0-nginx1.31.8`: the image no longer runs as root.**
+> Every image (Debian, Alpine and Ubuntu, on every architecture) now runs as the
+> unprivileged user `101:101`. `latest`, `latest-alpine` and `latest-ubuntu` move
+> to it on release; `lego5.4.1-nginx1.31.8` and older still run as root.
+> **An existing setup needs a one-time migration.** Read
+> [Upgrading to the Non-Root Image](#upgrading-to-the-non-root-image) before you pull.
+
 Automatically create and renew website SSL certificates using the
 [Let's Encrypt][1] free certificate authority and its client [*lego*][2].
 Built on top of the [official Nginx Docker images][9] (Debian, Alpine, and Ubuntu 24.04),
@@ -32,6 +40,8 @@ The upstream author [suggested this fork][pr373] and offered to link to it.
 - [Debian, Alpine, and Ubuntu 24.04](./docs/dockerhub_tags.md) images built for [multiple architectures][14].
 - **No Python dependency** — lego is a static Go binary; images are significantly smaller.
 - **150+ DNS providers** supported natively by lego (see [lego provider list][lego-providers]).
+- **Runs without root**: Nginx, lego and every script run as the unprivileged user `101:101` ([details](./docs/good_to_know.md#running-as-non-root)).
+- Can [share the certificates](./docs/advanced_usage.md#share-certificates-with-another-container) with another container through a group, without handing out root.
 
 
 
@@ -62,6 +72,30 @@ upstream author][pr373] — thanks for the excellent foundation.
    use the Let's Encrypt staging servers in order to not get rate limited.
 
 3. You will need to have [Docker][11] installed.
+
+
+## Upgrading to the Non-Root Image
+Starting with `lego5.6.0-nginx1.31.8` the container runs as uid `101`, gid `101`
+(the `nginx` user of the official Nginx images) instead of root. Nginx, lego and
+every script run as that user; nothing in the image needs root any more. Not
+ready yet? Stay on `lego5.4.1-nginx1.31.8` until you are.
+
+What can break in an existing setup, and how to fix it:
+
+| Your setup | What happens | Fix (once) |
+|---|---|---|
+| Certificates in a volume or host directory written by an older image | The container stops at startup and logs the path it cannot write and the command below | `docker run --rm --user 0 -v <volume-or-dir>:/etc/letsencrypt emulator/docker-nginx-lego chown -R 101:101 /etc/letsencrypt`, or `sudo chown -R 101:101 <dir>` on the host |
+| DNS credential files (`.ini`) the new user cannot read | DNS-01 requests fail with "not readable by this container's user" | `chown 101 <file>`, and keep it `0600` |
+| Other files you mount for Nginx: config files, certificates or keys outside `/etc/letsencrypt`, log files | Nginx cannot open them and fails to start or reload | make them readable by uid 101 (log files, and their folders, writable) |
+| `network_mode: host`, or a container runtime that blocks ports below 1024 | Nginx cannot bind ports 80/443 ("Permission denied") | allow unprivileged ports with `--sysctl net.ipv4.ip_unprivileged_port_start=0` (with host networking, set that sysctl on the host) |
+| An image built `FROM` this one that installs packages | `apt-get` / `apk` fail | `USER root` before the installs, `USER 101:101` at the end |
+| Your own mounted `nginx.conf` | Keeps working | remove its `user` line; it now only logs a warning |
+| `docker exec` into the container | Runs as uid 101 | nothing to do |
+
+A new, empty named volume needs nothing: Docker creates it owned by uid 101.
+Platforms that force their own uid in group `0` (OpenShift, Kubernetes
+`runAsUser`) work too. Kubernetes settings and the details behind each row are
+in [Running as Non-Root](./docs/good_to_know.md#running-as-non-root).
 
 
 ## Available Environment Variables
@@ -128,6 +162,9 @@ The file name must match the provider suffix in the cert name. For a cert
 named `example.com.dns-cloudflare`, the file is `cloudflare.ini`. For
 `example.com.dns-cloudflare_1`, it is `cloudflare_1.ini`.
 
+The container reads the file as uid `101`, so give it to that user and keep it
+private: `chown 101 cloudflare.ini && chmod 600 cloudflare.ini`.
+
 See [lego providers documentation](./docs/lego_providers.md) for the full list
 of providers and their required environment variables.
 
@@ -140,7 +177,7 @@ CLOUDFLARE_DNS_API_TOKEN = your-token-here
 
 
 ## Volumes
-- `/etc/letsencrypt`: Stores the obtained certificates and the Diffie-Hellman parameters
+- `/etc/letsencrypt`: Stores the obtained certificates and the Diffie-Hellman parameters. Must be writable by uid `101`.
 
 
 ## Run with `docker run`
@@ -151,10 +188,15 @@ the container:
 ```bash
 docker run -it -p 80:80 -p 443:443 \
            --env CERTBOT_EMAIL=your@email.org \
-           -v $(pwd)/nginx_secrets:/etc/letsencrypt \
+           -v nginx_secrets:/etc/letsencrypt \
            -v $(pwd)/user_conf.d:/etc/nginx/user_conf.d:ro \
-           --name nginx-lego emulator/docker-nginx-lego:lego5.0.4-nginx1.31.1
+           --name nginx-lego emulator/docker-nginx-lego:lego5.6.0-nginx1.31.8
 ```
+
+To keep the certificates in a host directory instead of the `nginx_secrets`
+volume, create it for the container's user first: `mkdir nginx_secrets && sudo
+chown 101:101 nginx_secrets`, then mount `$(pwd)/nginx_secrets`. A directory
+Docker creates on its own belongs to root, and the container would refuse it.
 
 > You should be able to detach from the container by holding `Ctrl` and pressing
   `p` + `q` after each other.
@@ -184,8 +226,18 @@ docker-compose up
 
 ## Build It Yourself
 ```Dockerfile
-FROM emulator/docker-nginx-lego:lego5.0.4-nginx1.31.1
+FROM emulator/docker-nginx-lego:lego5.6.0-nginx1.31.8
 COPY conf.d/* /etc/nginx/conf.d/
+```
+
+The image runs as `101:101`. A `RUN` step that needs root, such as installing a
+package, has to switch to root and back:
+
+```Dockerfile
+FROM emulator/docker-nginx-lego:lego5.6.0-nginx1.31.8
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*
+USER 101:101
 ```
 
 
