@@ -6,17 +6,23 @@ on:
     - cron: "0 9 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   check_nginx_version:
     name: "Check for new nginx release"
     runs-on: ubuntu-latest
-    environment: automation
+    environment: cve-autofix
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -29,14 +35,14 @@ jobs:
             | sed 's/^release-//' \
             | sort -V \
             | tail -1)
-          echo "version=${LATEST}" >> $GITHUB_OUTPUT
+          echo "version=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "Latest nginx release: ${LATEST}"
 
       - name: Get pinned nginx version from Dockerfile
         id: pinned
         run: |
           PINNED=$(grep -m1 '^FROM nginx:' src/Dockerfile | sed 's/FROM nginx://; s/@sha256:[^ ]*//')
-          echo "version=${PINNED}" >> $GITHUB_OUTPUT
+          echo "version=${PINNED}" >> "$GITHUB_OUTPUT"
           echo "Pinned nginx version: ${PINNED}"
 
       - name: Compare versions
@@ -46,10 +52,10 @@ jobs:
           PINNED: ${{ steps.pinned.outputs.version }}
         run: |
           if [ "$LATEST" = "$PINNED" ]; then
-            echo "up_to_date=true" >> $GITHUB_OUTPUT
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
             echo "nginx is up to date ($PINNED)"
           else
-            echo "up_to_date=false" >> $GITHUB_OUTPUT
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
             echo "New nginx version available: $LATEST (current: $PINNED)"
           fi
 
