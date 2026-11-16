@@ -97,6 +97,13 @@ Platforms that force their own uid in group `0` (OpenShift, Kubernetes
 `runAsUser`) work too. Kubernetes settings and the details behind each row are
 in [Running as Non-Root](./docs/good_to_know.md#running-as-non-root).
 
+> [!IMPORTANT]
+> Nginx's workers now run as the same user as lego, so a bug that lets an
+> attacker run code in a worker also exposes your DNS credentials and ACME
+> account key. Read [What it means for security](./docs/good_to_know.md#what-it-means-for-security):
+> use least-privilege DNS tokens, and run the container with
+> `--cap-drop ALL --security-opt no-new-privileges`.
+
 
 ## Available Environment Variables
 
@@ -187,6 +194,7 @@ the container:
 
 ```bash
 docker run -it -p 80:80 -p 443:443 \
+           --cap-drop ALL --security-opt no-new-privileges \
            --env CERTBOT_EMAIL=your@email.org \
            -v nginx_secrets:/etc/letsencrypt \
            -v $(pwd)/user_conf.d:/etc/nginx/user_conf.d:ro \

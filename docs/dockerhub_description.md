@@ -18,6 +18,7 @@ with certbot replaced by lego — endorsed by the upstream author.
 
 ```bash
 docker run -d -p 80:80 -p 443:443 \
+  --cap-drop ALL --security-opt no-new-privileges \
   -e CERTBOT_EMAIL=your@email.com \
   -v nginx_secrets:/etc/letsencrypt \
   -v $(pwd)/user_conf.d:/etc/nginx/user_conf.d:ro \
@@ -26,6 +27,10 @@ docker run -d -p 80:80 -p 443:443 \
 
 Place your nginx server configs in `user_conf.d/`. The container handles cert
 issuance and renewal automatically.
+
+Nginx's workers run as the same user as lego, so code running in a worker could
+read your DNS credentials. Use least-privilege DNS tokens and keep the two flags
+above; see [What it means for security](https://github.com/emulatorchen/docker-nginx-lego/blob/master/docs/good_to_know.md#what-it-means-for-security).
 
 ## Tags
 

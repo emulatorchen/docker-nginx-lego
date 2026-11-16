@@ -19,6 +19,11 @@ certificates (a non-root TLS terminator, for one) should not need root either;
   volume is a one-time `chown`, which the container prints itself.
 - **Moving the pid file to `/tmp`.** Rejected: `/run` is given to the `nginx`
   user instead, so a mounted `nginx.conf` with `pid /run/nginx.pid` keeps working.
+- **Building on a hardened Nginx image (Docker Hardened Images and similar).**
+  Rejected: lego and Nginx would still share one container and one uid, so it does
+  not address the trade-off below. Its runtime image has no shell for the bash
+  renewal scripts, and it is published for amd64 and arm64 only, not 386 and
+  arm/v7 ([#268](https://github.com/emulatorchen/docker-nginx-lego/issues/268)).
 
 ## Consequences
 
@@ -30,6 +35,10 @@ certificates (a non-root TLS terminator, for one) should not need root either;
 - The Ubuntu image creates the `nginx` user as `101:101` itself, so every variant
   shares one uid, and every build checks it.
 - Nginx's workers now share the uid that lego runs as. Under root the master and
-  lego kept the DNS credentials and the ACME account key out of the workers' reach;
-  now a compromised worker could read them. In exchange nothing in the container
-  runs as root any more, lego included. The docs ask for least-privilege DNS tokens.
+  lego kept the DNS credentials, the ACME account key and the configuration out of
+  the workers' reach; now code running in a worker can read and change them, and
+  in 2026 the rewrite-module bugs CVE-2026-9256 and CVE-2026-42945 were chained into
+  exactly that. In exchange nothing in the container runs as root any more, lego
+  included. The docs ask for least-privilege DNS tokens, no capabilities and
+  no-new-privileges. Running Nginx and lego in separate containers, as an opt-in,
+  is tracked in [#20](https://github.com/emulatorchen/docker-nginx-lego/issues/20).

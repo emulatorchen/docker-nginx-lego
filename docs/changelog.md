@@ -8,6 +8,11 @@
   cannot write it. See
   [Upgrading to the Non-Root Image](../README.md#upgrading-to-the-non-root-image)
   and [Running as Non-Root](./good_to_know.md#running-as-non-root).
+- **Security:** Nginx's workers now run as the same user as lego, so code
+  running in a worker could read the DNS credentials and the ACME account key.
+  Use least-privilege DNS tokens and run the container with
+  `--cap-drop ALL --security-opt no-new-privileges`
+  ([details](./good_to_know.md#what-it-means-for-security)).
 - New `NGINX_LEGO_CERT_GROUP`: gives a group read access to the certificates
   and keys so another container can use them
   ([details](./advanced_usage.md#share-certificates-with-another-container)).

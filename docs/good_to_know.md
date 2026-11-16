@@ -129,6 +129,8 @@ spec:
     runAsUser: 101
     runAsGroup: 101
     fsGroup: 101            # the certificate volume becomes writable by the pod
+    seccompProfile:         # pods get no seccomp profile unless you ask
+      type: RuntimeDefault
     sysctls:                # only if the runtime does not allow ports below 1024
       - name: net.ipv4.ip_unprivileged_port_start
         value: "0"
@@ -149,11 +151,35 @@ by group `0` as well.
 
 ### What it means for security
 Nothing in the container runs as root, lego and the scripts included. The other
-side of that: Nginx's workers now run as the same user as lego, where before only
-the root master and lego could read the DNS credentials and the ACME account key.
-Give the image DNS API tokens with the least power your provider allows (limited
-to the zone and, where possible, to TXT records), so a token leaked through a
-compromised Nginx can do as little as possible.
+side of that: Nginx's workers now run as the same user as lego. Under the old
+root image only root could read the DNS credentials and the ACME account key, or
+change `/etc/letsencrypt` and `/etc/nginx/conf.d`; now a worker can. That is not
+a theoretical risk. In 2026 two bugs in Nginx's rewrite module (CVE-2026-9256 and
+CVE-2026-42945) were exploited in the wild and shown to chain into code execution
+in a worker. An attacker who gets that far can read your DNS API token, use your
+ACME account, and leave a config file behind for the next renewal's reload.
+
+To keep that as small as possible:
+
+- Run a current release, which carries the fixed Nginx.
+- Give the image DNS API tokens with the least power your provider allows
+  (limited to the zone and, where possible, to TXT records), so a stolen token
+  can do as little as possible.
+- Drop every capability and block privilege escalation; the image needs
+  neither. With `docker run` add `--cap-drop ALL --security-opt no-new-privileges`;
+  in Compose `cap_drop: [ALL]` and `security_opt: [no-new-privileges:true]`, as in
+  the [example](../examples/docker-compose.yml); for Kubernetes see above.
+- Keep the runtime's default seccomp and AppArmor profiles: never run the
+  container `--privileged` or with `seccomp=unconfined`. Kubernetes pods run
+  without seccomp unless you set `seccompProfile: RuntimeDefault`. These profiles
+  block kernel features that privilege-escalation exploits rely on, such as
+  creating network namespaces.
+- Keep the host kernel patched. A kernel bug can turn any container user into
+  root, and several were exploited in 2026.
+
+Running Nginx and lego in separate containers, so that Nginx never holds the DNS
+credentials, is planned as an opt-in setup
+([#20](https://github.com/emulatorchen/docker-nginx-lego/issues/20)).
 
 ### `docker exec` and images built on top
 `docker exec` runs as uid 101 as well. An image built `FROM` this one starts as
