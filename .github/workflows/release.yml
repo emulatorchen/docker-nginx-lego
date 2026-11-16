@@ -209,9 +209,11 @@ jobs:
         run: |
           docker run -d \
             --name nginx-lego-test \
+            --group-add 10443 \
             -e CERTBOT_EMAIL="${CERTBOT_EMAIL}" \
             -e STAGING=1 \
             -e RENEWAL_INTERVAL=9999d \
+            -e NGINX_LEGO_CERT_GROUP=10443 \
             -e CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials \
             -v /tmp/lego-test-creds:/etc/letsencrypt/credentials:ro \
             -v /tmp/lego-test-conf:/etc/nginx/user_conf.d:ro \
@@ -238,6 +240,13 @@ jobs:
             exit 1
           fi
           echo "Certificate obtained successfully"
+
+      - name: Verify the certificate is shared with NGINX_LEGO_CERT_GROUP
+        env:
+          FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
+        run: |
+          tests/integration/check_cert_group.sh nginx-lego-test "${FREEMYIP_CERT_NAME}" 10443 \
+            docker-nginx-lego:integration-test lego-test-certs
 
       - name: Print container logs
         if: always()

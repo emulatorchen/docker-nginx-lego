@@ -152,8 +152,8 @@ nginx_config_stream() {
     if [ ! -r "${conf_file}" ]; then
         # Absent is fine and silent: Nginx tolerates an include glob matching
         # nothing, and so do we. Present but unreadable is a different thing —
-        # we run as root, so it means a broken mount or bad permissions, and
-        # staying quiet would hide every certificate declared inside it. sed
+        # a broken mount, or a file this container's user (uid 101) may not
+        # read — and staying quiet would hide every certificate in it. sed
         # used to report this itself before the parse_* functions read through
         # this function.
         if [ -e "${conf_file}" ]; then
@@ -656,4 +656,125 @@ auto_enable_configs() {
             fi
         fi
     done < <(find -L /etc/nginx/conf.d/ -name "*.conf*" -type f -print0)
+}
+
+# FORK: this function does not exist upstream. Do not overwrite this file from
+# upstream wholesale; see UPSTREAM_SYNC.md.
+#
+# Give the group named in NGINX_LEGO_CERT_GROUP read access to the certificates,
+# so another container (a TLS terminator in front of this one, say) can use them
+# without running as this container's user or as root.
+#
+# lego writes every key 0600 inside 0700 directories. This opens exactly the way
+# to the certificate files: certificates/, live/ and each live/<name>/ become
+# 0750, and the certificates and keys 0640, all owned by that group. The local CA
+# writes real files into live/<name>/, so those are shared as well; lego only
+# leaves symlinks there. The ACME account key (accounts/), lego's metadata
+# (*.json), DNS credentials (*.ini), archive/ and dhparams/ are never touched, and
+# no symlink is ever followed, so nothing outside these directories can change.
+#
+# Unset or empty leaves every permission as lego wrote it. A group this process
+# does not belong to cannot be handed out, so that is reported with the fix and
+# the files stay private.
+#
+# $1: Root of the certificate store (default: LEGO_PATH, or /etc/letsencrypt).
+share_certificates() {
+    local group="${NGINX_LEGO_CERT_GROUP:-}"
+    local root="${1:-${LEGO_PATH:-/etc/letsencrypt}}"
+    if [ -z "${group}" ]; then
+        return 0
+    fi
+
+    # Each find tolerates a missing directory: the process substitution inherits
+    # 'set -e' from callers such as run_local_ca.sh, so one failing find (the
+    # local CA has no certificates/) would otherwise silently skip the rest.
+    local -a paths=()
+    local path
+    while IFS= read -r -d $'\0' path; do
+        paths+=("${path}")
+    done < <(
+        find -P "${root}/certificates" -maxdepth 0 -type d -print0 2>/dev/null || true
+        find -P "${root}/live" -maxdepth 1 -type d -print0 2>/dev/null || true
+        find -P "${root}/certificates" -maxdepth 1 -type f \( -name '*.crt' -o -name '*.key' \) -print0 2>/dev/null || true
+        find -P "${root}/live" -mindepth 2 -maxdepth 2 -type f -name '*.pem' -print0 2>/dev/null || true
+    )
+    if [ ${#paths[@]} -eq 0 ]; then
+        debug "No certificates in '${root}' to share with group '${group}' yet"
+        return 0
+    fi
+
+    local mode out refused=""
+    for path in "${paths[@]}"; do
+        if [ -d "${path}" ]; then mode=750; else mode=640; fi
+        # Only widen the mode once the group is right, or a refused chgrp would
+        # leave the key readable by whatever group it already had.
+        if ! out="$(chgrp "${group}" "${path}" 2>&1)"; then
+            refused="${out}"
+            continue
+        fi
+        chmod "${mode}" "${path}"
+        debug "Shared '${path}' with group '${group}' (${mode})"
+    done
+
+    if [ -n "${refused}" ]; then
+        error "Could not give the certificates in '${root}' to group '${group}': ${refused}"
+        error "This container runs as uid $(id -u) with groups '$(id -G)' and can only hand files to one of them. Add the group to the container (docker run --group-add ${group}, compose 'group_add', Kubernetes 'supplementalGroups'), or set NGINX_LEGO_CERT_GROUP to a group it already has."
+        return 1
+    fi
+    info "Certificates in '${root}' are readable by group '${group}'"
+}
+
+# FORK: this function does not exist upstream. Do not overwrite this file from
+# upstream wholesale; see UPSTREAM_SYNC.md.
+#
+# Make sure this container's user can write everything it will have to write in
+# the certificate store, and say exactly how to fix it when it cannot.
+#
+# The image used to run as root, so a volume carried over from those days belongs
+# to root. Every renewal would then fail with a bare "permission denied", and
+# Nginx could not even read the keys. Checking once, before anything else runs,
+# turns that into one clear message with the command that fixes it.
+#
+# Credential files are not checked: they are often mounted read-only and only
+# have to be readable, which load_credentials reports on its own. Symlinks are
+# skipped, since a dangling one is not a permission problem.
+#
+# $1: Root of the certificate store (default: LEGO_PATH, or /etc/letsencrypt).
+check_storage_writable() {
+    local root="${1:-${LEGO_PATH:-/etc/letsencrypt}}"
+    local -a trees=()
+    local sub
+    for sub in accounts certificates live archive dhparams; do
+        if [ -e "${root}/${sub}" ]; then
+            trees+=("${root}/${sub}")
+        fi
+    done
+    if [ 1 = "${USE_LOCAL_CA}" ] && [ -e "${LOCAL_CA_DIR:-/etc/local_ca}" ]; then
+        trees+=("${LOCAL_CA_DIR:-/etc/local_ca}")
+    fi
+
+    # The shell's own -w test rather than find's -writable, which busybox find
+    # lacks: an unsupported option there would make this check pass silently.
+    local denied="" path
+    if [ ! -w "${root}" ]; then
+        denied="${root}"
+    elif [ ${#trees[@]} -gt 0 ]; then
+        while IFS= read -r -d $'\0' path; do
+            if [ ! -L "${path}" ] && [ ! -w "${path}" ]; then
+                denied="${path}"
+                break
+            fi
+        done < <(find "${trees[@]}" -print0 2>/dev/null || true)
+    fi
+    if [ -z "${denied}" ]; then
+        return 0
+    fi
+
+    local owner
+    owner="$(id -u):$(id -g)"
+    error "This container runs as uid $(id -u) and cannot write '${denied}'."
+    error "The image no longer runs as root, so files written by an older, root-run container must be handed over once. Run, then start again:"
+    error "  docker run --rm --user 0 -v <your volume or host directory>:${root} <this image> chown -R ${owner} ${root}"
+    error "or on the host: sudo chown -R ${owner} <host directory>"
+    return 1
 }

@@ -270,6 +270,12 @@ for cert_name in "${!certificates[@]}"; do
     fi
 done
 
+# FORK: not present upstream. Do not drop when syncing this file; see
+# UPSTREAM_SYNC.md.
+#
+# Local CA certificates get NGINX_LEGO_CERT_GROUP read access just like lego's.
+share_certificates /etc/letsencrypt || true
+
 # After trying to sign all of the certificates, auto enable any configs that we
 # did indeed succeed with.
 auto_enable_configs

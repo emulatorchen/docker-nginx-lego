@@ -119,6 +119,10 @@ load_credentials() {
         error "Credentials file '${creds_file}' not found"
         return 1
     fi
+    if [ ! -r "${creds_file}" ]; then
+        error "Credentials file '${creds_file}' is not readable by this container's user (uid $(id -u)); give it to that user, e.g. chown $(id -u) '${creds_file}' and keep it chmod 0600"
+        return 1
+    fi
 
     local detected_provider=""
     local -a env_args=()
@@ -256,6 +260,10 @@ get_certificate_lego() {
     ln -sf "${lego_certs_dir}/${lego_cert_name}.key"        "${live_dir}/privkey.pem"
     ln -sf "${lego_certs_dir}/${lego_cert_name}.issuer.crt" "${live_dir}/chain.pem"
     debug "Symlinked lego certs into '${live_dir}'"
+
+    # Give NGINX_LEGO_CERT_GROUP read access after every issue and renewal. A
+    # failure is logged by share_certificates and never fails the renewal.
+    share_certificates "${LEGO_PATH}" || true
 }
 
 # ---------------------------------------------------------------------------

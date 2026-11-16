@@ -1,4 +1,4 @@
-FROM nginx:1.31.8-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
+FROM nginx:1.31.8-alpine@sha256:fed7e14be83cbd2661a75cdc5b872d936cf155d46c327084d30b8df19ae88d72
 LABEL maintainer="emulatorchen"
 
 # FORK: Python/certbot removed. Only the static lego binary is installed.
@@ -10,7 +10,7 @@ LABEL maintainer="emulatorchen"
 #   - Review COPY scripts/ and lines after it for nginx-layer changes.
 #   - Skip all certbot/Python changes — they are intentionally removed.
 
-ARG LEGO_VERSION=5.4.1
+ARG LEGO_VERSION=5.6.0
 ARG TARGETARCH
 ARG TARGETVARIANT
 
@@ -62,6 +62,25 @@ RUN chmod +x -R /scripts && \
 # Make so that the parent's entrypoint script is properly triggered (issue #21).
     sed -ri '/^if \[ "\$1" = "nginx" \] \|\| \[ "\$1" = "nginx-debug" \]; then$/,${s//if echo "$1" | grep -q "nginx"; then/;b};$q1' /docker-entrypoint.sh
 
+# FORK: not present upstream. Do not drop when syncing this file; see UPSTREAM_SYNC.md.
+# The container runs as the unprivileged nginx user (101:101), not root, so that
+# user gets everything written at runtime. Group 0 gets the same access, so a
+# platform that starts the container as its own uid in group 0 (OpenShift,
+# Kubernetes runAsUser) works too. The 'user' line only matters to a root master
+# and goes; the pid file stays in /run, which nginx now owns.
+RUN set -e; \
+    [ "$(id -u nginx):$(id -g nginx)" = "101:101" ] \
+        || { echo "the nginx user is $(id -u nginx):$(id -g nginx), not 101:101" >&2; exit 1; }; \
+    sed -i '/^[[:space:]]*user[[:space:]]/d' /etc/nginx/nginx.conf; \
+    pid=$(sed -n 's/^[[:space:]]*pid[[:space:]][[:space:]]*\([^;]*\);.*/\1/p' /etc/nginx/nginx.conf); \
+    [ "$(readlink -f "$(dirname "${pid}")")" = /run ] \
+        || { echo "nginx writes its pid to '${pid}', not into /run" >&2; exit 1; }; \
+    mkdir -p /etc/letsencrypt /etc/local_ca /var/cache/nginx /var/www/letsencrypt; \
+    chown 101:0 /run; \
+    chmod g+rwx /run; \
+    chown -R 101:0 /etc/letsencrypt /etc/local_ca /var/cache/nginx /var/www/letsencrypt /etc/nginx/conf.d; \
+    chmod -R g+rwX /etc/letsencrypt /etc/local_ca /var/cache/nginx /var/www/letsencrypt /etc/nginx/conf.d
+
 # Create a volume to have persistent storage for the obtained certificates.
 
 # --- CVE security pins (auto-managed) ---
@@ -74,6 +93,9 @@ VOLUME /etc/letsencrypt
 # Applies and checks what the .trivyignore entries rely on; kept last so it also
 # covers packages installed by earlier layers, including the CVE pin block.
 RUN /scripts/cve_mitigations.sh alpine
+
+# FORK: run as the nginx user prepared above; see UPSTREAM_SYNC.md.
+USER 101:101
 
 # The Nginx parent Docker image already expose port 80, so we only need to add
 # port 443 here.

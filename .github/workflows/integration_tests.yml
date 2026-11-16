@@ -37,6 +37,7 @@ jobs:
           filters: |
             src:
               - "src/**"
+              - "tests/integration/**"
 
   integration_freemyip:
     needs: changes
@@ -121,9 +122,11 @@ jobs:
         run: |
           docker run -d \
             --name nginx-lego-test \
+            --group-add 10443 \
             -e CERTBOT_EMAIL="${CERTBOT_EMAIL}" \
             -e STAGING=1 \
             -e RENEWAL_INTERVAL=9999d \
+            -e NGINX_LEGO_CERT_GROUP=10443 \
             -e CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials \
             -v /tmp/lego-test-creds:/etc/letsencrypt/credentials:ro \
             -v /tmp/lego-test-conf:/etc/nginx/user_conf.d:ro \
@@ -153,6 +156,14 @@ jobs:
           fi
           echo "Certificate obtained successfully"
 
+      - name: Verify the certificate is shared with NGINX_LEGO_CERT_GROUP
+        if: steps.check.outputs.skip != 'true'
+        env:
+          FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
+        run: |
+          tests/integration/check_cert_group.sh nginx-lego-test "${FREEMYIP_CERT_NAME}" 10443 \
+            docker-nginx-lego:integration-test lego-test-certs
+
       - name: Print container logs
         if: steps.check.outputs.skip != 'true' && always()
         run: docker logs nginx-lego-test || true
@@ -164,15 +175,56 @@ jobs:
           docker rm nginx-lego-test || true
           docker volume rm lego-test-certs || true
 
+  nonroot_smoke:
+    needs: changes
+    if: needs.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+    name: "Non-root smoke test (${{ matrix.variant }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: debian
+            dockerfile: ./src/Dockerfile
+          - variant: alpine
+            dockerfile: ./src/Dockerfile-alpine
+          - variant: ubuntu
+            dockerfile: ./src/Dockerfile-ubuntu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build ${{ matrix.variant }} image (amd64)
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: ./src
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          tags: docker-nginx-lego:smoke-${{ matrix.variant }}
+
+      - name: Run the non-root smoke test
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: tests/integration/smoke_nonroot.sh "docker-nginx-lego:smoke-${VARIANT}"
+
   integration_status:
     name: "Integration test status"
-    needs: [integration_freemyip]
+    needs: [integration_freemyip, nonroot_smoke]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - run: |
-          if [ "${INTEGRATION_FREEMYIP_RESULT}" = "failure" ]; then
+          if [ "${INTEGRATION_FREEMYIP_RESULT}" = "failure" ] || \
+             [ "${NONROOT_SMOKE_RESULT}" = "failure" ]; then
             exit 1
           fi
         env:
           INTEGRATION_FREEMYIP_RESULT: ${{ needs.integration_freemyip.result }}
+          NONROOT_SMOKE_RESULT: ${{ needs.nonroot_smoke.result }}

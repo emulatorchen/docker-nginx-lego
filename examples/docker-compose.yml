@@ -8,6 +8,9 @@ services:
       - CERTBOT_EMAIL
     env_file:
       - ./nginx-lego.env
+    # group_add: ["10443"]                      # with NGINX_LEGO_CERT_GROUP=10443
+    cap_drop: [ALL]                             # the image needs no capabilities
+    security_opt: ["no-new-privileges:true"]
     ports:
       - 80:80
       - 443:443

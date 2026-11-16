@@ -1,4 +1,4 @@
-FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254
+FROM ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
 LABEL maintainer="emulatorchen"
 
 # FORK: Uses Ubuntu 24.04 (Noble) as the base instead of the official nginx Docker
@@ -11,7 +11,7 @@ LABEL maintainer="emulatorchen"
 # Skip all certbot/Python changes from upstream — they are intentionally removed.
 
 ARG NGINX_VERSION=1.31.8
-ARG LEGO_VERSION=5.4.1
+ARG LEGO_VERSION=5.6.0
 ARG TARGETARCH
 ARG TARGETVARIANT
 
@@ -22,6 +22,11 @@ RUN set -ex && \
         gnupg \
         ca-certificates \
     && \
+# FORK: create the nginx user as 101:101 like the official nginx images do, so every
+# variant runs as the same uid. The nginx package keeps a user that already exists.
+    groupadd --system --gid 101 nginx && \
+    useradd --system --uid 101 --gid nginx --no-create-home --home-dir /nonexistent \
+        --shell /usr/sbin/nologin --comment "nginx user" nginx && \
 # Add official nginx.org mainline repository for Ubuntu Noble.
     curl -fsSL https://nginx.org/keys/nginx_signing.key \
         | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg && \
@@ -72,12 +77,33 @@ COPY nginx_conf.d/ /etc/nginx/conf.d/
 COPY scripts/ /scripts
 RUN chmod +x -R /scripts
 
+# FORK: the container runs as the unprivileged nginx user (101:101), not root, so
+# that user gets everything written at runtime. Group 0 gets the same access, so a
+# platform that starts the container as its own uid in group 0 (OpenShift,
+# Kubernetes runAsUser) works too. The 'user' line only matters to a root master
+# and goes; the pid file stays in /run, which nginx now owns.
+RUN set -e; \
+    [ "$(id -u nginx):$(id -g nginx)" = "101:101" ] \
+        || { echo "the nginx user is $(id -u nginx):$(id -g nginx), not 101:101" >&2; exit 1; }; \
+    sed -i '/^[[:space:]]*user[[:space:]]/d' /etc/nginx/nginx.conf; \
+    pid=$(sed -n 's/^[[:space:]]*pid[[:space:]][[:space:]]*\([^;]*\);.*/\1/p' /etc/nginx/nginx.conf); \
+    [ "$(readlink -f "$(dirname "${pid}")")" = /run ] \
+        || { echo "nginx writes its pid to '${pid}', not into /run" >&2; exit 1; }; \
+    mkdir -p /etc/letsencrypt /etc/local_ca /var/cache/nginx /var/www/letsencrypt; \
+    chown 101:0 /run; \
+    chmod g+rwx /run; \
+    chown -R 101:0 /etc/letsencrypt /etc/local_ca /var/cache/nginx /var/www/letsencrypt /etc/nginx/conf.d; \
+    chmod -R g+rwX /etc/letsencrypt /etc/local_ca /var/cache/nginx /var/www/letsencrypt /etc/nginx/conf.d
+
 # Create a volume to have persistent storage for the obtained certificates.
 VOLUME /etc/letsencrypt
 
 # Applies and checks what the .trivyignore entries rely on; kept last so it also
 # covers packages installed by earlier layers, including the CVE pin block.
 RUN /scripts/cve_mitigations.sh ubuntu
+
+# FORK: run as the nginx user prepared above.
+USER 101:101
 
 # Expose both ports: 80 for ACME HTTP-01 challenges, 443 for HTTPS.
 EXPOSE 80 443

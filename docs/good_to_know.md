@@ -63,6 +63,130 @@ we give users a simple way to just start the container, without having to build
 a local image first, while still giving them the opportunity to keep doing it
 in the old way like how [`@staticfloat`'s image][5] worked.
 
+The files you mount there are read by the container's user, uid `101`, so they
+have to be readable by it; world-readable files, the usual default, are fine.
+
+
+## Running as Non-Root
+From `lego5.6.0-nginx1.31.8` on, every image runs as the unprivileged user
+`101:101`, the `nginx` user of the official Nginx images (the Ubuntu image
+creates it with the same numbers). Nginx's master and workers, lego and every
+script run as that user; there is no root process and no root variant of the
+image. Everything the container writes at runtime belongs to that user:
+`/etc/letsencrypt`, `/etc/local_ca`, `/var/www/letsencrypt`, `/etc/nginx/conf.d`,
+`/var/cache/nginx` and the pid file in `/run`. Until you are ready to migrate,
+`lego5.4.1-nginx1.31.8` and older tags keep running as root.
+
+### Your certificate storage
+A new named volume is created from the image and already belongs to uid 101, so
+it needs nothing. A volume or host directory written by an older image belongs
+to root. At startup the container checks that it can write its storage and, if
+it cannot, stops before Nginx starts and logs the path and the command that fixes
+it:
+
+```bash
+docker run --rm --user 0 -v <volume-or-dir>:/etc/letsencrypt \
+  emulator/docker-nginx-lego chown -R 101:101 /etc/letsencrypt
+```
+
+For a host directory, `sudo chown -R 101:101 <dir>` on the host does the same.
+Prepare a new host directory the same way before the first start, since a
+directory Docker creates for a bind mount belongs to root.
+
+### Files you mount
+Everything Nginx and lego open is now opened as uid 101 instead of root: your
+`user_conf.d` files and whatever they include, certificates and keys outside
+`/etc/letsencrypt`, DNS credential (`.ini`) files, and any log file you point
+Nginx at. Make them readable by uid 101 (world-readable is enough for configs;
+give credential files to uid 101 and keep them `0600`), and make log files and
+their directories writable. Content Nginx serves was already read by the `nginx`
+user before, so it is unaffected.
+
+### Ports 80 and 443
+An unprivileged process may bind ports below 1024 only when the kernel allows it.
+Docker allows it in every container it starts
+(`net.ipv4.ip_unprivileged_port_start=0`), so the image needs no capability and
+gets none; dropping all capabilities works. Two cases need a setting:
+
+- Host networking (`--network host`, `network_mode: host`): the host's own
+  setting applies, 1024 by default. Set `net.ipv4.ip_unprivileged_port_start=80`
+  on the host, or publish the ports instead.
+- Another container runtime: set the same sysctl for the container, for example
+  `--sysctl net.ipv4.ip_unprivileged_port_start=0`, or in Kubernetes through
+  `securityContext.sysctls` (it is a safe sysctl).
+
+### Your own `nginx.conf`
+The image's `nginx.conf` no longer has a `user` line, which only applies when the
+master runs as root. A `nginx.conf` you mount keeps working, since Nginx ignores
+its `user` line with a warning; remove it to silence that. Keep the `pid` file in
+`/run`, which the `nginx` user owns.
+
+### Kubernetes and platform-assigned users
+```yaml
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101            # the certificate volume becomes writable by the pod
+    seccompProfile:         # pods get no seccomp profile unless you ask
+      type: RuntimeDefault
+    sysctls:                # only if the runtime does not allow ports below 1024
+      - name: net.ipv4.ip_unprivileged_port_start
+        value: "0"
+  containers:
+    - name: nginx-lego
+      image: emulator/docker-nginx-lego:lego5.6.0-nginx1.31.8
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+```
+
+The image's `USER` is numeric, so `runAsNonRoot` can verify it. A platform that
+starts the container as a uid of its own choosing, such as OpenShift's restricted
+policy or a different `runAsUser`, works as long as that uid is in group `0`,
+which OpenShift arranges by default: everything the container writes is writable
+by group `0` as well.
+
+### What it means for security
+Nothing in the container runs as root, lego and the scripts included. The other
+side of that: Nginx's workers now run as the same user as lego. Under the old
+root image only root could read the DNS credentials and the ACME account key, or
+change `/etc/letsencrypt` and `/etc/nginx/conf.d`; now a worker can. That is not
+a theoretical risk. In 2026 two bugs in Nginx's rewrite module (CVE-2026-9256 and
+CVE-2026-42945) were exploited in the wild and shown to chain into code execution
+in a worker. An attacker who gets that far can read your DNS API token, use your
+ACME account, and leave a config file behind for the next renewal's reload.
+
+To keep that as small as possible:
+
+- Run a current release, which carries the fixed Nginx.
+- Give the image DNS API tokens with the least power your provider allows
+  (limited to the zone and, where possible, to TXT records), so a stolen token
+  can do as little as possible.
+- Drop every capability and block privilege escalation; the image needs
+  neither. With `docker run` add `--cap-drop ALL --security-opt no-new-privileges`;
+  in Compose `cap_drop: [ALL]` and `security_opt: [no-new-privileges:true]`, as in
+  the [example](../examples/docker-compose.yml); for Kubernetes see above.
+- Keep the runtime's default seccomp and AppArmor profiles: never run the
+  container `--privileged` or with `seccomp=unconfined`. Kubernetes pods run
+  without seccomp unless you set `seccompProfile: RuntimeDefault`. These profiles
+  block kernel features that privilege-escalation exploits rely on, such as
+  creating network namespaces.
+- Keep the host kernel patched. A kernel bug can turn any container user into
+  root, and several were exploited in 2026.
+
+Running Nginx and lego in separate containers, so that Nginx never holds the DNS
+credentials, is planned as an opt-in setup
+([#20](https://github.com/emulatorchen/docker-nginx-lego/issues/20)).
+
+### `docker exec` and images built on top
+`docker exec` runs as uid 101 as well. An image built `FROM` this one starts as
+`101:101`, so switch to `USER root` for steps that need root, such as installing
+packages, and back to `USER 101:101` at the end; see
+[Build It Yourself](../README.md#build-it-yourself).
+
 
 ## How the Script add Domain Names to Certificate Requests
 The included script will go through all configuration files (`*.conf*`) it
@@ -255,7 +379,8 @@ You can also create this file on a completely different (faster?) computer and
 just mount/copy the created file into this container. This is perfectly fine,
 since it is nothing "private/personal" about this file. The only thing to
 think about in that case would perhaps be to use a folder that is not under
-`/etc/letsencrypt/`, since that would otherwise cause a double mount.
+`/etc/letsencrypt/`, since that would otherwise cause a double mount, and to make
+the file readable by the container's user, uid `101`.
 
 ## Binaries Removed for Unfixed CVEs
 Some components carry CVEs that have no fixed package in the Debian image yet,
@@ -272,7 +397,8 @@ changes as the last step of every image build:
   shows the overrides that keep it that way across upgrades.
 
 In an image built on top of this one, running
-`/scripts/cve_mitigations.sh <debian|ubuntu|alpine> --check` as root tells you
+`/scripts/cve_mitigations.sh <debian|ubuntu|alpine> --check` as root (after
+`USER root` in your Dockerfile) tells you
 whether these still hold. To get one of the tools back, delete the exclude file or the
 override (`dpkg-statoverride --remove <path>`) and reinstall the package.
 

@@ -13,11 +13,10 @@ standard settings included, but on the last line we can se that it opens the
 `/etc/nginx/conf.d/` folder and loads any file that ends with `.conf`.
 
 ```bash
-user  nginx;
 worker_processes  auto;
 
 error_log  /var/log/nginx/error.log notice;
-pid        /var/run/nginx.pid;
+pid        /run/nginx.pid;
 
 events {
     worker_connections  1024;
@@ -44,6 +43,10 @@ http {
 }
 ```
 
+The parent image's file starts with `user  nginx;` as well. This image removes
+that line, because it starts Nginx as the `nginx` user in the first place
+(see [Running as Non-Root](./good_to_know.md#running-as-non-root)).
+
 Files in this folder are being loaded in alphabetical order, so something named
 `00-proxy.conf` will be loaded before `10-other.conf`. This i really useful to
 know, since it allows you to load common settings used by multiple `server`
@@ -53,7 +56,9 @@ However, all of these `.conf` file are loaded within the `http` block in Nginx,
 so if you want to change anything outside of this block (e.g. `events`) you
 will have to add some sort of [`/docker-entrypoint.d/`][7] script to handle it
 before Nginx starts, or you can mount your own custom `nginx.conf` on top of
-the default.
+the default. If you do, leave out the `user` line (Nginx only warns about it
+when not running as root), keep the `pid` file in `/run`, and make the file
+readable by uid `101`.
 
 A small disclaimer on the last part is that a host mounted file
 (`-v $(pwd)/nginx.conf:/etc/nginx/nginx.conf`) will [not change][8] inside the

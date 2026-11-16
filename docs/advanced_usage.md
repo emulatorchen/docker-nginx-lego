@@ -208,6 +208,70 @@ completes. If the service that consumes it cannot start without the file, give i
 a self-signed placeholder of your own, or let it retry.
 
 
+## Share Certificates With Another Container
+lego writes every private key readable only by the user that runs it (`0600`,
+inside `0700` directories). That keeps the keys safe, but it also means another
+container that needs the same certificates (a TLS terminator in front of Nginx,
+a mail server, an MQTT broker) can only read them by running as that same user
+or as root.
+
+Set `NGINX_LEGO_CERT_GROUP` to a group name or numeric gid to give that group
+read access instead:
+
+| Path | Becomes |
+|---|---|
+| `certificates/`, `live/` and every `live/<cert_name>/` | `0750`, owned by the group |
+| `certificates/*.crt` and `certificates/*.key` | `0640`, owned by the group |
+| files the [local CA](#local-ca) writes into `live/<cert_name>/` | `0640`, owned by the group |
+
+Nothing else changes. The ACME account key (`accounts/`), lego's metadata
+(`*.json`), DNS credential files (`*.ini`), `archive/` and `dhparams/` keep the
+permissions they have, and no symlink is ever followed. The group is applied
+after every issue and renewal, and once at startup for certificates that
+already exist. Unset, nothing changes at all.
+
+A process can only hand a file to a group it belongs to, so this container needs
+the group too. Give both containers the same supplementary group:
+
+```yaml
+services:
+  nginx:
+    image: emulator/docker-nginx-lego:latest
+    group_add: ["10443"]
+    environment:
+      - CERTBOT_EMAIL=your@email.org
+      - NGINX_LEGO_CERT_GROUP=10443
+    volumes:
+      - nginx_secrets:/etc/letsencrypt
+      - ./user_conf.d:/etc/nginx/user_conf.d:ro
+
+  proxy:
+    image: example/tls-proxy:latest
+    user: "1000:1000"
+    group_add: ["10443"]
+    volumes:
+      - nginx_secrets:/etc/letsencrypt:ro
+
+volumes:
+  nginx_secrets:
+```
+
+With `docker run` the same is `--group-add 10443`, and in Kubernetes it is
+`securityContext.supplementalGroups: [10443]`. The gid does not have to exist
+in either image. If this container is not a member of the group, it logs an
+error saying so and the keys stay private.
+
+Two details:
+
+- Mount the volume at `/etc/letsencrypt` in the other container as well. The
+  files in `live/<cert_name>/` are absolute symlinks into
+  `/etc/letsencrypt/certificates/`, so they only resolve at that path.
+- The other container can read any file in the volume that is readable by
+  everyone, such as a DNS credentials file created `0644`. Keep credential files
+  `0600`, or outside the shared volume with
+  [`CERTBOT_DNS_CREDENTIALS_DIR`](../README.md#advanced).
+
+
 ## Use Custom ACME URL
 There are two variables available at the top of the
 [`run_lego.sh`](../src/scripts/run_lego.sh) script:
