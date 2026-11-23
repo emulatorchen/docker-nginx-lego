@@ -84,7 +84,7 @@ RUN set -e; \
 # Create a volume to have persistent storage for the obtained certificates.
 
 # --- CVE security pins (auto-managed) ---
-RUN apk add --no-cache 'libuuid>=2.42.3-r1'
+RUN apk add --no-cache 'libxml2>=2.13.9-r3'
 # --- end CVE security pins ---
 
 VOLUME /etc/letsencrypt
