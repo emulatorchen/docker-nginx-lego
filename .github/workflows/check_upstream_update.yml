@@ -36,14 +36,15 @@ jobs:
 
       - name: Get upstream latest release
         id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          RESPONSE=$(curl -s "https://api.github.com/repos/JonasAlfredsson/docker-nginx-certbot/releases/latest")
-          TAG=$(echo "$RESPONSE" | jq -r '.tag_name')
-          DATE=$(echo "$RESPONSE" | jq -r '.published_at | split("T")[0]')
-          URL=$(echo "$RESPONSE" | jq -r '.html_url')
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "date=${DATE}" >> $GITHUB_OUTPUT
-          echo "url=${URL}" >> $GITHUB_OUTPUT
+          # Fails the run, so no issue is opened, when GitHub gives no usable release.
+          RELEASE=$(.github/latest_version.sh upstream)
+          IFS=$'\t' read -r TAG DATE URL <<< "$RELEASE"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
           echo "Latest upstream release: ${TAG} (${DATE})"
 
       - name: Compare refs
