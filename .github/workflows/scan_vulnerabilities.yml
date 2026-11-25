@@ -709,11 +709,14 @@ jobs:
           # the only automated fix is upgrading lego itself to pick up the patched dependency.
           LEGO_NOTE=""
           if [ -n "$FIXABLE_LEGO" ] || [ -n "$LEGO_TRANSITIVE_CVES" ]; then
-            LATEST_LEGO=$(curl -sf "https://api.github.com/repos/go-acme/lego/releases/latest" \
-              | jq -r '.tag_name' | sed 's/^v//')
+            # Empty when GitHub gives no usable version, so lego is never set to "null".
+            LATEST_LEGO=$(.github/latest_version.sh lego || true)
             CURRENT_LEGO=$(grep -m1 '^ARG LEGO_VERSION=' src/Dockerfile \
               | sed 's/ARG LEGO_VERSION=//')
-            if [ -n "$LATEST_LEGO" ] && [ "$LATEST_LEGO" != "$CURRENT_LEGO" ]; then
+            if [ -z "$LATEST_LEGO" ]; then
+              echo "::warning::could not read the latest lego release from GitHub; leaving lego at ${CURRENT_LEGO:-unknown}"
+              LEGO_NOTE="lego left at ${CURRENT_LEGO:-unknown}: GitHub gave no usable latest release"
+            elif [ "$LATEST_LEGO" != "$CURRENT_LEGO" ]; then
               sed -i "s/^ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${LATEST_LEGO}/" \
                 src/Dockerfile src/Dockerfile-alpine src/Dockerfile-ubuntu
               LEGO_NOTE="Bumped lego ${CURRENT_LEGO} → ${LATEST_LEGO}"

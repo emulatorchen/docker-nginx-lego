@@ -22,14 +22,12 @@ jobs:
 
       - name: Get latest nginx release
         id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          LATEST=$(curl -s "https://api.github.com/repos/nginx/nginx/tags?per_page=50" \
-            | jq -r '.[].name' \
-            | grep -E '^release-[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sed 's/^release-//' \
-            | sort -V \
-            | tail -1)
-          echo "version=${LATEST}" >> $GITHUB_OUTPUT
+          # Fails the run, so no PR is opened, when GitHub gives no usable version.
+          LATEST=$(.github/latest_version.sh nginx)
+          echo "version=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "Latest nginx release: ${LATEST}"
 
       - name: Get pinned nginx version from Dockerfile
@@ -54,18 +52,36 @@ jobs:
           fi
 
       - name: Update nginx version in Dockerfiles
+        id: update
         if: steps.compare.outputs.up_to_date == 'false'
         env:
           NEW: ${{ steps.latest.outputs.version }}
         run: |
-          DIGEST=$(docker buildx imagetools inspect "nginx:${NEW}" --format '{{json .Manifest}}' | jq -r .digest)
-          ALPINE_DIGEST=$(docker buildx imagetools inspect "nginx:${NEW}-alpine" --format '{{json .Manifest}}' | jq -r .digest)
-          sed -i "s|^FROM nginx:.*|FROM nginx:${NEW}@${DIGEST}|" src/Dockerfile
-          sed -i "s|^FROM nginx:.*|FROM nginx:${NEW}-alpine@${ALPINE_DIGEST}|" src/Dockerfile-alpine
+          cp src/Dockerfile src/Dockerfile-alpine src/Dockerfile-ubuntu "${RUNNER_TEMP}/"
+          # Change only the tag; base_digests.sh then pins the digest the new tag has
+          # on Docker Hub, and refuses anything that is not a sha256 digest.
+          sed -i "s|^FROM nginx:[^@ -]*@|FROM nginx:${NEW}@|" src/Dockerfile
+          sed -i "s|^FROM nginx:[^@ ]*-alpine@|FROM nginx:${NEW}-alpine@|" src/Dockerfile-alpine
           sed -i "s/^ARG NGINX_VERSION=.*/ARG NGINX_VERSION=${NEW}/" src/Dockerfile-ubuntu
+          set +e
+          .github/base_digests.sh --update src/Dockerfile src/Dockerfile-alpine
+          rc=$?
+          set -e
+          if [ "$rc" -eq 3 ]; then
+            # nginx tags a release on GitHub before its images reach Docker Hub.
+            cp "${RUNNER_TEMP}/Dockerfile" "${RUNNER_TEMP}/Dockerfile-alpine" "${RUNNER_TEMP}/Dockerfile-ubuntu" src/
+            echo "::notice::nginx ${NEW} has no image on Docker Hub yet; no PR this run, the next run checks again"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$rc" -eq 0 ] || exit "$rc"
+          grep -qE "^FROM nginx:${NEW//./\\.}@sha256:[0-9a-f]{64}$" src/Dockerfile
+          grep -qE "^FROM nginx:${NEW//./\\.}-alpine@sha256:[0-9a-f]{64}$" src/Dockerfile-alpine
+          grep -qxF "ARG NGINX_VERSION=${NEW}" src/Dockerfile-ubuntu
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Open pull request
-        if: steps.compare.outputs.up_to_date == 'false'
+        if: steps.compare.outputs.up_to_date == 'false' && steps.update.outputs.ready == 'true'
         uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8.1.0
         with:
           token: ${{ secrets.CVE_AUTOFIX_TOKEN }}

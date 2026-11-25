@@ -22,10 +22,12 @@ jobs:
 
       - name: Get latest lego release
         id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          LATEST=$(curl -s "https://api.github.com/repos/go-acme/lego/releases/latest" \
-            | jq -r '.tag_name' | sed 's/^v//')
-          echo "version=${LATEST}" >> $GITHUB_OUTPUT
+          # Fails the run, so no PR is opened, when GitHub gives no usable version.
+          LATEST=$(.github/latest_version.sh lego)
+          echo "version=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "Latest lego release: ${LATEST}"
 
       - name: Get pinned lego version from Dockerfile
@@ -57,6 +59,9 @@ jobs:
           sed -i "s/ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${NEW}/" src/Dockerfile
           sed -i "s/ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${NEW}/" src/Dockerfile-alpine
           sed -i "s/ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${NEW}/" src/Dockerfile-ubuntu
+          for f in src/Dockerfile src/Dockerfile-alpine src/Dockerfile-ubuntu; do
+            grep -qxF "ARG LEGO_VERSION=${NEW}" "$f"
+          done
 
       - name: Open pull request
         if: steps.compare.outputs.up_to_date == 'false'
