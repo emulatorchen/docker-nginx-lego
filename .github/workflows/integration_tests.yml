@@ -23,7 +23,10 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  # A new push to a PR cancels that PR's older run. Nothing else cancels a
+  # running run; GitHub still drops a waiting run when a newer one of the same
+  # group queues behind it.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -52,12 +55,23 @@ jobs:
   # exactly those lines.
   integration_freemyip:
     needs: changes
-    if: needs.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+    # A fork's pull request gets no secrets, so it has nothing to test here and
+    # must not take a place in the freemyip-dns queue below.
+    if: >-
+      (needs.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     name: "DNS-01 via FreeMyIP (staging)"
     runs-on: ubuntu-latest
     permissions:
       contents: read
     timeout-minutes: 30
+    # One FreeMyIP TXT record serves every run: wait for any other PR's or a
+    # release's DNS-01 test (release.yml integration_check) to finish first.
+    # GitHub keeps one job waiting per group: a third arrival cancels the one
+    # waiting, which then needs a re-run.
+    concurrency:
+      group: freemyip-dns
+      cancel-in-progress: false
     steps:
       - name: Check secrets and variables
         id: check
