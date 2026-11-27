@@ -36,8 +36,9 @@ for v in $VARIANTS; do
   need HUB_USER HUB_PAT
   [ -n "$jwt" ] || jwt=$(HUB_SECRET="$HUB_PAT" hub_jwt)
   [ -n "$jwt" ] || die "could not authenticate to the Docker Hub API"
+  echo "::add-mask::${jwt}"
   code=$(curl -s -o /dev/null -w '%{http_code}' --retry 3 --max-time 30 -X DELETE \
-           "https://hub.docker.com/v2/repositories/${HUB_REPO}/tags/${t}/" -H "Authorization: Bearer ${jwt}")
+           "https://hub.docker.com/v2/repositories/${HUB_REPO}/tags/${t}/" -H @<(printf 'Authorization: Bearer %s\n' "$jwt"))
   case "$code" in
     20*|404) echo "deleted ${t} (HTTP ${code})" ;;
     *) die "deleting ${t} returned HTTP ${code}" ;;

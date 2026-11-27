@@ -57,16 +57,20 @@ jobs:
             echo "New lego version available: $LATEST (current: $PINNED)"
           fi
 
-      - name: Update LEGO_VERSION in Dockerfiles
+      - name: Update lego and its checksum pins in the Dockerfiles
         if: steps.compare.outputs.up_to_date == 'false'
         env:
           NEW: ${{ steps.latest.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          sed -i "s/ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${NEW}/" src/Dockerfile
-          sed -i "s/ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${NEW}/" src/Dockerfile-alpine
-          sed -i "s/ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${NEW}/" src/Dockerfile-ubuntu
+          # Writes LEGO_VERSION and every architecture's checksum, and only after
+          # gh has verified that lego's release workflow attested each tarball.
+          .github/lego_pins.sh --update "$NEW"
           for f in src/Dockerfile src/Dockerfile-alpine src/Dockerfile-ubuntu; do
             grep -qxF "ARG LEGO_VERSION=${NEW}" "$f"
+            if [ "$(grep -cE '^ARG LEGO_SHA256_(AMD64|386|ARM64|ARMV7)=[0-9a-f]{64}$' "$f")" -ne 4 ]; then
+              echo "::error::${f} does not pin all four lego checksums"; exit 1
+            fi
           done
 
       - name: Open pull request

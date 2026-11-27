@@ -258,9 +258,15 @@ jobs:
 
       - name: Set up QEMU for multi-arch pin verification
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          # Pinned: the default, tonistiigi/binfmt:latest, runs privileged unpinned.
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       - name: Download scan artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -723,9 +729,13 @@ jobs:
               echo "::warning::could not read the latest lego release from GitHub; leaving lego at ${CURRENT_LEGO:-unknown}"
               LEGO_NOTE="lego left at ${CURRENT_LEGO:-unknown}: GitHub gave no usable latest release"
             elif [ "$LATEST_LEGO" != "$CURRENT_LEGO" ]; then
-              sed -i "s/^ARG LEGO_VERSION=.*/ARG LEGO_VERSION=${LATEST_LEGO}/" \
-                src/Dockerfile src/Dockerfile-alpine src/Dockerfile-ubuntu
-              LEGO_NOTE="Bumped lego ${CURRENT_LEGO} → ${LATEST_LEGO}"
+              # Writes nothing unless every tarball verifies against lego's attestations.
+              if .github/lego_pins.sh --update "$LATEST_LEGO"; then
+                LEGO_NOTE="Bumped lego ${CURRENT_LEGO} → ${LATEST_LEGO}"
+              else
+                echo "::warning::lego ${LATEST_LEGO} did not verify against its attestations; leaving lego at ${CURRENT_LEGO}"
+                LEGO_NOTE="lego left at ${CURRENT_LEGO}: ${LATEST_LEGO} did not verify against its attestations"
+              fi
             else
               LEGO_NOTE="lego already at latest (${CURRENT_LEGO:-unknown}); transitive CVEs require an upstream lego release"
               # Comment on each affected issue so it's clear why no auto-fix was applied

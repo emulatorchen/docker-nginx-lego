@@ -11,7 +11,8 @@
 # CI installs both with sha256 verification (the docker-nginx-lego pattern).
 
 set -uo pipefail
-cd "$(git rev-parse --show-toplevel)" || exit 1
+# VALIDATE_ROOT lets the tests point the gate at a fixture tree without git.
+cd "${VALIDATE_ROOT:-$(git rev-parse --show-toplevel)}" || exit 1
 
 WF=".github/workflows"
 TOOLS_DIR="${TOOLS_DIR:-}"
@@ -21,6 +22,32 @@ FAIL=0
 ok()    { printf '  ok    %s\n' "$1"; }
 bad()   { printf '  FAIL  %s\n' "$1"; FAIL=1; }
 head_() { printf '\n== %s ==\n' "$1"; }
+
+# triggers <file>: the names of a workflow's triggers, one per line. Accepts a
+# quoted "on", a block of trigger keys (quoted or not), a scalar, an inline list
+# (also spread over several lines) and an inline map.
+triggers() {
+  awk '
+    function emit(v,    n, a, i, k) {
+      gsub(/[][{},]/, " ", v); n = split(v, a, " ")
+      for (i = 1; i <= n; i++) {
+        k = a[i]
+        if (k ~ /:$/) { sub(/:$/, "", k); print k }
+        else if (k != "") print k
+      }
+    }
+    { line = $0; if (line ~ /^ *#/) next; sub(/[ ]+#.*$/, "", line); gsub(/["\047]/, "", line) }
+    inl { buf = buf " " line; if (line ~ /\]/) { emit(buf); inl = 0 }; next }
+    !o && line ~ /^on:/ {
+      v = line; sub(/^on: */, "", v)
+      if (v ~ /^\[/ && v !~ /\]/) { inl = 1; buf = v; next }
+      if (v != "") { emit(v); exit }
+      o = 1; next
+    }
+    o && line ~ /^[^ ]/ { exit }
+    o && match(line, /^  [A-Za-z_]+ *:/) { k = substr(line, RSTART, RLENGTH); gsub(/[ :]/, "", k); print k }
+  ' "$1" | sort -u
+}
 
 # ── 1. actionlint (also validates YAML syntax) ───────────────────────────────
 head_ "actionlint / YAML syntax"
@@ -50,6 +77,92 @@ grep -rh 'uses:' "$WF" 2>/dev/null | while IFS= read -r line; do
   fi
 done > /tmp/_pin.txt
 cat /tmp/_pin.txt; grep -q FAIL /tmp/_pin.txt && FAIL=1; rm -f /tmp/_pin.txt
+
+# ── 2b. build helper images pinned by digest ─────────────────────────────────
+#
+# A pinned action can still run an unpinned image. setup-qemu starts
+# tonistiigi/binfmt:latest privileged by default, and that image registers the
+# interpreters every non-native RUN step of a multi-arch build goes through;
+# setup-buildx boots a moby/buildkit image that does the build itself. A
+# replaced image could change what gets built and still be attested, so both
+# must name their image by digest, and nothing else may set QEMU or buildx up.
+#
+# Read line by line, so the rule is defensive about form: comments decide
+# nothing, keys may be quoted, a step ends where the indentation falls back to
+# its dash, only inputs under the step's own with: count, and every buildkit
+# image= in driver-opts must be pinned, not just one of them.
+head_ "Build helper images pinned by digest"
+for f in "$WF"/*.y*ml; do
+  awk -v F="$(basename "$f")" '
+    function ind(s) { match(s, /^ */); return RLENGTH }
+    function pinned(s) { return match(s, /@sha256:[0-9a-f]+/) && RLENGTH == 72 }
+    function report(good, what, okmsg, badmsg) {
+      printf "  %s  %s:%d %s %s\n", (good ? "ok  " : "FAIL"), F, start, what, (good ? okmsg : badmsg)
+    }
+    function close_step() {
+      if (kind == "qemu")
+        report(img_ok && !img_bad, "setup-qemu", "image pinned",
+               "without a digest-pinned image: (tonistiigi/binfmt:<tag>@sha256:...)")
+      else if (kind == "buildx")
+        report(img_ok && !img_bad, "setup-buildx", "buildkit pinned",
+               "without a digest-pinned buildkit image (driver-opts: image=moby/buildkit:<tag>@sha256:...)")
+      kind = ""; img_ok = 0; img_bad = 0; with_ind = -1; dopts_ind = -1
+    }
+    # One input value: image (qemu) or every image= in driver-opts (buildx).
+    function check_value(key, v,    rest) {
+      if (kind == "qemu" && key == "image") { if (pinned(v)) img_ok = 1; else img_bad = 1 }
+      if (kind == "buildx" && key == "driver-opts") {
+        rest = v
+        # Keep the match position: pinned() calls match() itself and would
+        # reset RSTART/RLENGTH, and this loop would never move forward.
+        while (match(rest, /image=[^ ,]+/)) {
+          s = RSTART; l = RLENGTH
+          if (pinned(substr(rest, s, l))) img_ok = 1; else img_bad = 1
+          rest = substr(rest, s + l)
+        }
+      }
+    }
+    BEGIN { with_ind = -1; dopts_ind = -1; last_dash = -1 }
+    {
+      line = $0
+      if (line ~ /^ *#/ || line ~ /^ *$/) next
+      sub(/[ ]+#.*$/, "", line); gsub(/["\047]/, "", line)
+      i = ind(line)
+      if (kind != "" && i <= step_ind) close_step()
+      if (line ~ /^ *- /) last_dash = i
+      if (match(line, /uses: *[^ ,}]+/)) {
+        u = substr(line, RSTART, RLENGTH); sub(/uses: */, "", u); a = tolower(u); sub(/@.*/, "", a)
+        if (a == "docker/setup-qemu-action" || a == "docker/setup-buildx-action") {
+          kind = (a ~ /qemu/) ? "qemu" : "buildx"; start = NR
+          step_ind = (line ~ /^ *- /) ? i : last_dash
+          # A flow-style with: { ... } on the same line.
+          if (match(line, /with: *\{.*\}/)) {
+            w = substr(line, RSTART, RLENGTH)
+            if (match(w, /image: *[^,}]+/)) check_value("image", substr(w, RSTART + 6, RLENGTH - 6))
+            if (match(w, /driver-opts: *[^,}]+/)) check_value("driver-opts", substr(w, RSTART + 12, RLENGTH - 12))
+          }
+        } else if (a ~ /qemu|buildx/) {
+          printf "  FAIL  %s:%d %s sets up QEMU or buildx itself; use the pinned docker/setup-* steps\n", F, NR, u
+        }
+        next
+      }
+      if (kind == "") next
+      if (with_ind >= 0 && i <= with_ind) { with_ind = -1; dopts_ind = -1 }
+      if (dopts_ind >= 0 && i <= dopts_ind) dopts_ind = -1
+      if (line ~ /^ *with: *$/) { with_ind = i; next }
+      if (with_ind < 0) next
+      if (dopts_ind >= 0) { check_value("driver-opts", line); next }
+      if (match(line, /^ *[A-Za-z_-]+ *:/)) {
+        key = substr(line, RSTART, RLENGTH); gsub(/[ :]/, "", key)
+        v = line; sub(/^ *[A-Za-z_-]+ *: */, "", v)
+        if (key == "driver-opts" && v ~ /^[|>]/) { dopts_ind = i; next }
+        check_value(key, v)
+      }
+    }
+    END { if (kind != "") close_step() }
+  ' "$f"
+done > /tmp/_img.txt
+cat /tmp/_img.txt; grep -q FAIL /tmp/_img.txt && FAIL=1; rm -f /tmp/_img.txt
 
 # ── 3. no workflow-level write permission (must be job-scoped) ───────────────
 head_ "Rule 4 — write permissions are job-scoped"
@@ -270,18 +383,53 @@ done
 # ── 9. release workflow is human-triggered only ──────────────────────────────
 # A tag push is not an explicit release decision: anything that can create a
 # ref can start it. workflow_dispatch forces a person to press the button.
-head_ "Rule 3 — release runs only on workflow_dispatch"
-for f in "$WF"/release.y*ml; do
+#
+# Withdrawing a release deletes published tags, so it is held to the same rule,
+# and any trigger but workflow_dispatch counts: workflow_run, repository_dispatch
+# or pull_request_target start a run that no person chose just as push does.
+head_ "Rule 3 — release and withdraw run only on workflow_dispatch"
+for f in "$WF"/release.y*ml "$WF"/withdraw_release.y*ml; do
   [ -e "$f" ] || continue
-  trig=$(awk '/^on:/{o=1;next} /^[^[:space:]]/{o=0} o' "$f")
-  printf '%s' "$trig" | grep -q 'workflow_dispatch' || bad "$(basename "$f"): no workflow_dispatch trigger"
-  if printf '%s' "$trig" | grep -qE '^[[:space:]]*(push|pull_request|schedule):'; then
-    bad "$(basename "$f"): has an automatic trigger — publishing must be human-initiated"
-    printf '%s\n' "$trig" | grep -E '^[[:space:]]*(push|pull_request|schedule):' | sed 's/^/        /'
+  trig=$(triggers "$f")
+  printf '%s\n' "$trig" | grep -qx 'workflow_dispatch' || bad "$(basename "$f"): no workflow_dispatch trigger"
+  other=$(printf '%s\n' "$trig" | grep -v '^$' | grep -vx 'workflow_dispatch' | tr '\n' ' ' | sed 's/ $//')
+  if [ -n "$other" ]; then
+    bad "$(basename "$f"): triggers other than workflow_dispatch: ${other}"
   else
     ok "$(basename "$f"): workflow_dispatch only"
   fi
 done
+
+# ── 9b. pull_request runs get no identity and no write to the repository ─────
+#
+# A pull_request run executes the PR's own code. With id-token or attestations
+# it could sign or attest something in this repository's name, and with
+# contents: write it could push tags or branches; none of that is review.
+# Quoted keys, inline maps and write-all count the same.
+head_ "PR-triggered jobs ask for no id-token, attestations or contents write"
+for f in "$WF"/*.y*ml; do
+  triggers "$f" | grep -qE '^pull_request(_target)?$' || continue
+  awk -v F="$(basename "$f")" '
+    { line = $0; if (line ~ /^ *#/) next; sub(/[ ]+#.*$/, "", line); gsub(/["\047]/, "", line) }
+    line ~ /permissions: *write-all/ { printf "  FAIL  %s:%d PR-triggered job asks for write-all\n", F, NR; next }
+    line ~ /permissions: *\{/ {
+      rest = line
+      while (match(rest, /(id-token|attestations|contents) *: *write/)) {
+        s = RSTART; l = RLENGTH
+        k = substr(rest, s, l); sub(/ *:.*/, "", k)
+        printf "  FAIL  %s:%d PR-triggered job asks for %s: write\n", F, NR, k
+        rest = substr(rest, s + l)
+      }
+      next
+    }
+    match(line, /^ +(id-token|attestations|contents) *: *write *$/) {
+      k = line; sub(/^ +/, "", k); sub(/ *:.*/, "", k)
+      printf "  FAIL  %s:%d PR-triggered job asks for %s: write\n", F, NR, k
+    }
+  ' "$f"
+done > /tmp/_prw.txt
+if [ -s /tmp/_prw.txt ]; then cat /tmp/_prw.txt; FAIL=1; else ok "none"; fi
+rm -f /tmp/_prw.txt
 
 # ── 10. a cancelled or failed release is reverted ────────────────────────────
 # Something must run when a release stops part-way after its first push, and
@@ -618,6 +766,34 @@ else
   echo "  skip  gh unavailable or unauthenticated — pin/tag agreement not checked"
 fi
 
+# ── 13b. a pinned composite action pins what it runs ─────────────────────────
+# A composite action's own steps are not covered by the pin on the action: one
+# that calls actions/checkout@v3 inside runs whatever that tag points at today.
+# Read each pinned action's action.yml at its pinned SHA; a composite must name
+# its steps by SHA (or by digest for docker://). Needs gh, like rule 13.
+head_ "Pinned composite actions pin the steps they run"
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  grep -rhoE "uses:[[:space:]]*[\"']?[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+@[0-9a-f]{40}" "$WF" \
+    | sed -E "s/uses:[[:space:]]*[\"']?//" | sort -u | while IFS=@ read -r path sha; do
+      repo=$(printf '%s' "$path" | cut -d/ -f1,2); sub=$(printf '%s' "$path" | cut -d/ -f3-)
+      y=""
+      for n in action.yml action.yaml; do
+        y=$(gh api "repos/${repo}/contents/${sub:+${sub}/}${n}?ref=${sha}" -q .content 2>/dev/null | base64 -d 2>/dev/null) || y=""
+        [ -n "$y" ] && break
+      done
+      if [ -z "$y" ]; then printf '  FAIL  %s@%s — action.yml not readable\n' "$path" "$sha"; continue; fi
+      printf '%s\n' "$y" | grep -qE "^[[:space:]]*using:[[:space:]]*[\"']?composite" || continue
+      loose=$(printf '%s\n' "$y" | grep -E '^[[:space:]]*-?[[:space:]]*uses:' \
+        | sed -E "s/.*uses:[[:space:]]*[\"']?//; s/[\"'[:space:]].*//" \
+        | grep -vE '@[0-9a-f]{40}$|^\./|^docker://[^[:space:]]+@sha256:[0-9a-f]{64}$' | tr '\n' ' ')
+      if [ -z "$loose" ]; then printf '  ok    %s pins its steps\n' "$path"
+      else printf '  FAIL  %s runs %sby tag\n' "$path" "$loose"; fi
+    done > /tmp/_comp.txt
+  cat /tmp/_comp.txt; grep -q FAIL /tmp/_comp.txt && FAIL=1; rm -f /tmp/_comp.txt
+else
+  echo "  skip  gh unavailable or unauthenticated — composite actions not read"
+fi
+
 # ── 14. zizmor — nothing at error level ──────────────────────────────────────
 # BLOCK_SEVERITY follows the release workflow's input of the same name, so the
 # bar tightens in one place. CRITICAL blocks on zizmor's error level only;
@@ -625,7 +801,15 @@ fi
 # softer setting reports everything and just does not fail the build.
 head_ "zizmor (blocking at ${BLOCK_SEVERITY:-CRITICAL})"
 if command -v zizmor >/dev/null 2>&1; then
-  zizmor --format plain --no-online-audits "$WF" > /tmp/_zz.txt 2>&1
+  # --no-config: a zizmor.yml added by the change under review must not be able
+  # to switch audits off for that same change.
+  zizmor --format plain --no-online-audits --no-config "$WF" > /tmp/_zz.txt 2>&1
+  zz_rc=$?
+  # 0 is clean and 10-14 are findings by severity; anything else means zizmor
+  # did not finish, and an audit that did not run must not read as a pass.
+  if [ "$zz_rc" -ne 0 ] && { [ "$zz_rc" -lt 10 ] || [ "$zz_rc" -gt 14 ]; }; then
+    bad "zizmor did not complete (exit ${zz_rc}):"; sed 's/^/        /' /tmp/_zz.txt | head -20
+  fi
 
   if grep -qE '^error\[' /tmp/_zz.txt; then
     bad "error-level findings:"; grep -E '^error\[' /tmp/_zz.txt | sed 's/^/        /'

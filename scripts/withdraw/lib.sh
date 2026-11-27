@@ -76,9 +76,11 @@ hub_jwt() {
   u=$(printf '%s' "${HUB_USER:-}" | tr -d '[:space:]')
   p=$(printf '%s' "${HUB_SECRET:-}" | tr -d '[:space:]')
   if [ -z "$u" ] || [ -z "$p" ]; then die "Docker Hub username or credential is empty"; fi
-  body=$(jq -n --arg u "$u" --arg p "$p" '{username:$u, password:$p}')
-  curl -sf --retry 3 --max-time 30 -X POST "https://hub.docker.com/v2/users/login" \
-    -H "Content-Type: application/json" -d "$body" | jq -r '.token // empty'
+  body=$(U="$u" P="$p" jq -n '{username: env.U, password: env.P}')
+  # Over stdin, not the command line, where any process on the runner could
+  # read it. The caller masks the token it gets back.
+  printf '%s' "$body" | curl -sf --retry 3 --max-time 30 -X POST "https://hub.docker.com/v2/users/login" \
+    -H "Content-Type: application/json" --data-binary @- | jq -r '.token // empty'
 }
 
 # The live Docker Hub page, from the public API. Fails when it cannot be read.

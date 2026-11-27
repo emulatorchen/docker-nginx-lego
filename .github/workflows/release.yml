@@ -120,7 +120,7 @@ jobs:
   security_preflight:
     name: "Security preflight"
     needs: [resolve_tag]
-    if: always() && needs.resolve_tag.result == 'success'
+    if: ${{ !cancelled() && needs.resolve_tag.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -225,6 +225,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       - name: Build Debian image (amd64)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -302,6 +305,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       - name: Build Debian amd64 image for scanning
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -340,6 +346,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       - name: Build Alpine amd64 image for scanning
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -378,6 +387,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       - name: Build Ubuntu amd64 image for scanning
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -442,7 +454,7 @@ jobs:
   release_gate:
     name: "Release gate"
     needs: [resolve_tag, security_preflight, workflow_scan, integration_check, scan_debian, scan_alpine, scan_ubuntu]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -497,7 +509,7 @@ jobs:
   release_approval:
     name: "⚠️ Approve to PUBLISH — nothing has been written yet"
     needs: [resolve_tag, release_gate]
-    if: always() && needs.release_gate.result == 'success'
+    if: ${{ !cancelled() && needs.release_gate.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: release-approval
@@ -533,7 +545,7 @@ jobs:
   publish_debian:
     name: "Push debian by digest"
     needs: [resolve_tag, release_approval]
-    if: always() && needs.release_approval.result == 'success'
+    if: ${{ !cancelled() && needs.release_approval.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: release
@@ -559,7 +571,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          # Pinned: the default, tonistiigi/binfmt:latest, runs privileged unpinned.
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       # Over stdin, not as an action input, so the token reaches docker and no
       # third-party action.
@@ -634,7 +652,7 @@ jobs:
   publish_alpine:
     name: "Push alpine by digest"
     needs: [resolve_tag, release_approval]
-    if: always() && needs.release_approval.result == 'success'
+    if: ${{ !cancelled() && needs.release_approval.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: release
@@ -660,7 +678,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          # Pinned: the default, tonistiigi/binfmt:latest, runs privileged unpinned.
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       # Over stdin, not as an action input, so the token reaches docker and no
       # third-party action.
@@ -733,7 +757,7 @@ jobs:
   publish_ubuntu:
     name: "Push ubuntu by digest"
     needs: [resolve_tag, release_approval]
-    if: always() && needs.release_approval.result == 'success'
+    if: ${{ !cancelled() && needs.release_approval.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: release
@@ -759,7 +783,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          # Pinned: the default, tonistiigi/binfmt:latest, runs privileged unpinned.
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       # Over stdin, not as an action input, so the token reaches docker and no
       # third-party action.
@@ -822,14 +852,17 @@ jobs:
 
   # The GitHub release, and with it the git tag, on the exact commit that was
   # built. Only once all three variants are on Docker Hub.
+  # Waits for gate_published, so neither the git tag nor (through
+  # promote_moving_tags) latest ever points at an image the scan rejected.
   github_release:
     name: "Create GitHub release"
-    needs: [resolve_tag, release_approval, publish_debian, publish_alpine, publish_ubuntu]
+    needs: [resolve_tag, release_approval, publish_debian, publish_alpine, publish_ubuntu, gate_published]
     if: |
-      always() && needs.release_approval.result == 'success' &&
+      !cancelled() && needs.release_approval.result == 'success' &&
       needs.publish_debian.result == 'success' &&
       needs.publish_alpine.result == 'success' &&
-      needs.publish_ubuntu.result == 'success'
+      needs.publish_ubuntu.result == 'success' &&
+      (inputs.skip_security_scan || needs.gate_published.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -891,7 +924,7 @@ jobs:
   promote_moving_tags:
     name: "Move latest and the short tags"
     needs: [resolve_tag, release_approval, publish_debian, publish_alpine, publish_ubuntu, github_release]
-    if: always() && needs.github_release.result == 'success'
+    if: ${{ !cancelled() && needs.github_release.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
@@ -899,6 +932,9 @@ jobs:
       contents: read
     steps:
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
       - name: Log in to Docker Hub
         env:
           HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -943,7 +979,7 @@ jobs:
   dockerhub_description:
     name: "Refresh the Docker Hub page"
     needs: [resolve_tag, release_approval, promote_moving_tags]
-    if: always() && needs.promote_moving_tags.result == 'success'
+    if: ${{ !cancelled() && needs.promote_moving_tags.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: dockerhub-metadata
@@ -968,7 +1004,7 @@ jobs:
     name: "Scan the published images"
     needs: [resolve_tag, release_approval, publish_debian, publish_alpine, publish_ubuntu]
     if: |
-      always() && needs.publish_debian.result == 'success' &&
+      !cancelled() && needs.publish_debian.result == 'success' &&
       needs.publish_alpine.result == 'success' && needs.publish_ubuntu.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1027,6 +1063,75 @@ jobs:
           path: trivy-*.json
           if-no-files-found: error
 
+  # Blocks the commit while any published image has a fixable CRITICAL or HIGH
+  # finding, on every platform that was pushed. The scans before the approval
+  # look at a separate amd64 build; this is the image people pull. A failure
+  # skips commit_tags, so the rollback below takes the release back down.
+  gate_published:
+    name: "Gate: ${{ matrix.variant }} ${{ matrix.platform }} has no fixable CRITICAL/HIGH"
+    needs: [resolve_tag, publish_debian, publish_alpine, publish_ubuntu]
+    if: |
+      !cancelled() && !inputs.skip_security_scan &&
+      needs.publish_debian.result == 'success' &&
+      needs.publish_alpine.result == 'success' && needs.publish_ubuntu.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: debian, platform: linux/amd64 }
+          - { variant: debian, platform: linux/386 }
+          - { variant: debian, platform: linux/arm64 }
+          - { variant: debian, platform: linux/arm/v7 }
+          - { variant: alpine, platform: linux/amd64 }
+          - { variant: alpine, platform: linux/arm64 }
+          - { variant: ubuntu, platform: linux/amd64 }
+          - { variant: ubuntu, platform: linux/arm64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Find this platform's image in the published index
+        id: platform
+        env:
+          HUB_REPO: ${{ needs.resolve_tag.outputs.hub_repo }}
+          VARIANT: ${{ matrix.variant }}
+          PLATFORM: ${{ matrix.platform }}
+          DEBIAN: ${{ needs.publish_debian.outputs.digest }}
+          ALPINE: ${{ needs.publish_alpine.outputs.digest }}
+          UBUNTU: ${{ needs.publish_ubuntu.outputs.digest }}
+        run: |
+          set -euo pipefail
+          case "$VARIANT" in
+            debian) index="$DEBIAN" ;;
+            alpine) index="$ALPINE" ;;
+            ubuntu) index="$UBUNTU" ;;
+            *) echo "::error::unknown variant ${VARIANT}"; exit 1 ;;
+          esac
+          [[ "$index" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no published digest for ${VARIANT}"; exit 1; }
+          os="${PLATFORM%%/*}"; rest="${PLATFORM#*/}"; arch="${rest%%/*}"; variant=""
+          if [ "$rest" != "$arch" ]; then variant="${rest#*/}"; fi
+          digest=$(docker buildx imagetools inspect --raw "docker.io/${HUB_REPO}@${index}" \
+            | jq -r --arg os "$os" --arg a "$arch" --arg v "$variant" \
+                '.manifests[] | select(.platform.os == $os and .platform.architecture == $a
+                                       and ((.platform.variant // "") == $v)) | .digest' | head -n 1)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::${PLATFORM} is not in ${HUB_REPO}@${index}"; exit 1; }
+          echo "${VARIANT} ${PLATFORM}: ${digest}"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - name: Scan it (block on fixable CRITICAL/HIGH)
+        uses: lhotari/sandboxed-trivy-action@f01374b6cc3bf7264ab238293e94f6db7ada6dd0 # v1.0.2
+        with:
+          scan-ref: docker.io/${{ needs.resolve_tag.outputs.hub_repo }}@${{ steps.platform.outputs.digest }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: table
+          exit-code: 1
+
   # One issue per CVE. A finding with an open issue gets a comment instead, so
   # a withdrawal can put the list back exactly: close what this release opened,
   # delete what it commented. After the moving tags, so the list describes a
@@ -1035,7 +1140,7 @@ jobs:
     name: "Open or update an issue per CVE"
     needs: [resolve_tag, release_approval, promote_moving_tags, scan_published]
     if: |
-      always() && needs.promote_moving_tags.result == 'success' &&
+      !cancelled() && needs.promote_moving_tags.result == 'success' &&
       needs.scan_published.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1113,13 +1218,14 @@ jobs:
   # finishes the rest.
   commit_tags:
     name: "Commit: create the three version tags together"
-    needs: [resolve_tag, publish_debian, publish_alpine, publish_ubuntu, github_release, promote_moving_tags, dockerhub_description, scan_published, record_cves]
+    needs: [resolve_tag, publish_debian, publish_alpine, publish_ubuntu, github_release, promote_moving_tags, dockerhub_description, scan_published, gate_published, record_cves]
     if: |
-      always() &&
+      !cancelled() &&
       needs.publish_debian.result == 'success' && needs.publish_alpine.result == 'success' &&
       needs.publish_ubuntu.result == 'success' && needs.github_release.result == 'success' &&
       needs.promote_moving_tags.result == 'success' && needs.dockerhub_description.result == 'success' &&
-      needs.scan_published.result == 'success' && needs.record_cves.result == 'success'
+      needs.scan_published.result == 'success' && needs.record_cves.result == 'success' &&
+      (inputs.skip_security_scan || needs.gate_published.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
@@ -1131,6 +1237,9 @@ jobs:
       started: ${{ steps.mark.outputs.started }}
     steps:
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
       - name: Log in to Docker Hub
         env:
           HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -1321,6 +1430,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
       - name: Move them back, or remove them
         env:
           TAG: ${{ needs.rollback_plan.outputs.tag }}

@@ -43,16 +43,19 @@ if [ "$HUB_USER" != "$(printf '%s' "$HUB_USER" | tr '[:upper:]' '[:lower:]')" ];
   echo "::warning::DOCKERHUB_USERNAME contains uppercase. Docker Hub currently requires the lowercase Docker ID."
 fi
 
-login=$(jq -n --arg u "$HUB_USER" --arg p "$HUB_PW" '{username:$u, password:$p}')
-jwt=$(curl -sf --retry 3 --max-time 30 -X POST "https://hub.docker.com/v2/users/login" \
-        -H "Content-Type: application/json" -d "$login" | jq -r '.token // empty')
+# The password goes over stdin, not the command line, where any process on the
+# runner could read it; the token it buys is masked before anything can log it.
+login=$(U="$HUB_USER" P="$HUB_PW" jq -n '{username: env.U, password: env.P}')
+jwt=$(printf '%s' "$login" | curl -sf --retry 3 --max-time 30 -X POST "https://hub.docker.com/v2/users/login" \
+        -H "Content-Type: application/json" --data-binary @- | jq -r '.token // empty')
 [ -n "$jwt" ] || { echo "dockerhub_page.sh: could not authenticate to Docker Hub" >&2; exit 1; }
+echo "::add-mask::${jwt}"
 
 body=$(jq -n --rawfile full "$README" --arg short "$SHORT" --arg vcs "${VCS_URL:-}" \
          '{full_description:$full, description:$short} + (if $vcs == "" then {} else {vcs_url:$vcs} end)')
 code=$(curl -s -o /dev/null -w '%{http_code}' --retry 3 --max-time 30 -X PATCH \
          "https://hub.docker.com/v2/repositories/${REPO}/" \
-         -H "Authorization: Bearer ${jwt}" -H "Content-Type: application/json" -d "$body")
+         -H @<(printf 'Authorization: Bearer %s\n' "$jwt") -H "Content-Type: application/json" -d "$body")
 case "$code" in
   2*) echo "Docker Hub accepted the page (HTTP ${code})" ;;
   *)  echo "dockerhub_page.sh: Docker Hub refused the page (HTTP ${code})" >&2; exit 1 ;;
