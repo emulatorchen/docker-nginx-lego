@@ -49,6 +49,31 @@ triggers() {
   ' "$1" | sort -u
 }
 
+# ── 0. the workflow directory holds only plain workflow files ────────────────
+# Every rule below reads "$WF"/*.y*ml as text, and that glob skips a hidden
+# file (.x.yml). Carriage returns or a byte-order mark change what the text
+# rules see, not what GitHub runs. A symlink or a stray file such as a
+# .gitignore is no workflow at all.
+head_ "Workflow files are plain files the rules can read"
+# A function, not a loop inside $( ): bash 3.2 cannot parse a case there.
+plain_files() {
+  local f n
+  for f in "$WF"/* "$WF"/.[!.]* "$WF"/..?*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    n=$(basename "$f")
+    if [ -L "$f" ] || [ ! -f "$f" ]; then echo "  FAIL  ${n}: not a regular file"; continue; fi
+    case "$n" in
+      .*.yml|.*.yaml) echo "  FAIL  ${n}: hidden, so the rules would not read it"; continue ;;
+      *.yml|*.yaml)   ;;
+      *)              echo "  FAIL  ${n}: not a workflow file"; continue ;;
+    esac
+    if LC_ALL=C grep -q "$(printf '\r')" "$f"; then echo "  FAIL  ${n}: carriage returns"; fi
+    if [ "$(head -c 3 "$f" | od -An -tx1 | tr -d ' \n')" = "efbbbf" ]; then echo "  FAIL  ${n}: byte-order mark"; fi
+  done
+}
+plain=$(plain_files)
+if [ -n "$plain" ]; then printf '%s\n' "$plain"; FAIL=1; else ok "only plain .yml/.yaml files"; fi
+
 # ── 1. actionlint (also validates YAML syntax) ───────────────────────────────
 head_ "actionlint / YAML syntax"
 if command -v actionlint >/dev/null 2>&1; then
@@ -802,8 +827,10 @@ fi
 head_ "zizmor (blocking at ${BLOCK_SEVERITY:-CRITICAL})"
 if command -v zizmor >/dev/null 2>&1; then
   # --no-config: a zizmor.yml added by the change under review must not be able
-  # to switch audits off for that same change.
-  zizmor --format plain --no-online-audits --no-config "$WF" > /tmp/_zz.txt 2>&1
+  # to switch audits off for that same change. Files, not the directory: given
+  # a directory zizmor skips whatever a .gitignore lists, and --strict-collection
+  # fails on a file it cannot parse instead of skipping it with a warning.
+  zizmor --format plain --no-online-audits --no-config --strict-collection "$WF"/*.y*ml > /tmp/_zz.txt 2>&1
   zz_rc=$?
   # 0 is clean and 10-14 are findings by severity; anything else means zizmor
   # did not finish, and an audit that did not run must not read as a pass.

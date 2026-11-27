@@ -151,7 +151,8 @@ jobs:
 
       - name: Run security scans
         run: |
-          zizmor --format plain .github/workflows/ > /tmp/zizmor_out.txt 2>&1 || true
+          # Files, not the directory: given a directory, zizmor skips what a .gitignore lists.
+          zizmor --format plain .github/workflows/*.y*ml > /tmp/zizmor_out.txt 2>&1 || true
           actionlint .github/workflows/*.yml > /tmp/actionlint_out.txt 2>&1 || true
 
       - name: Query open security issues

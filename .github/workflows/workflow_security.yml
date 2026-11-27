@@ -86,7 +86,8 @@ jobs:
 
       - name: Scan all workflows (SARIF)
         run: |
-          zizmor --format sarif .github/workflows/ > zizmor.sarif 2>/dev/null || true
+          # Files, not the directory: given a directory, zizmor skips what a .gitignore lists.
+          zizmor --format sarif .github/workflows/*.y*ml > zizmor.sarif 2>/dev/null || true
 
       - name: Upload SARIF to Security tab
         if: always()
@@ -102,7 +103,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git worktree add /tmp/base-wt "origin/${BASE_REF}" --quiet 2>/dev/null
-          zizmor --format sarif /tmp/base-wt/.github/workflows/ > /tmp/base.sarif 2>/dev/null || true
+          zizmor --format sarif /tmp/base-wt/.github/workflows/*.y*ml > /tmp/base.sarif 2>/dev/null || true
           git worktree remove /tmp/base-wt --force 2>/dev/null || true
 
           # Fingerprint: ruleId + file URI (no line — stable across refactors within a file)
@@ -339,6 +340,11 @@ jobs:
 
       # The pin-versus-tag check needs an authenticated gh; without it that
       # check reports "skip" and a pin naming the wrong version passes.
+      #
+      # On a pull request these are the pull request's own rules, the only copy
+      # that knows a rule it adds or fixes. The pull request can edit them and
+      # this file, so rules-gate (rules_gate.yml) also applies master's rules,
+      # running from master.
       - name: Check the rules
         env:
           BLOCK_SEVERITY: CRITICAL,HIGH

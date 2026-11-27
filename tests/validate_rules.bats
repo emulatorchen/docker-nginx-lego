@@ -232,3 +232,59 @@ EOF
   grep -qE "FAIL  acme/wrap runs actions/checkout@v3.0.2 by tag" <<< "${output}"
   grep -qE "ok    acme/good pins its steps" <<< "${output}"
 }
+
+# ── the workflow directory: only files the text rules can read ───────────────
+
+@test "a hidden workflow file is refused" {
+  workflow ci.yml '      - run: echo hi'
+  workflow .sneaky.yml '      - run: echo hi'
+  run_gate
+  grep -qE "FAIL  \.sneaky\.yml: hidden, so the rules would not read it" <<< "${output}"
+}
+
+@test "a .gitignore or any other non-workflow file in the directory is refused" {
+  workflow ci.yml '      - run: echo hi'
+  echo ci.yml > "${WF}/.gitignore"
+  echo notes > "${WF}/README.md"
+  run_gate
+  grep -qE "FAIL  \.gitignore: not a workflow file" <<< "${output}"
+  grep -qE "FAIL  README\.md: not a workflow file" <<< "${output}"
+}
+
+@test "carriage returns or a byte-order mark in a workflow are refused" {
+  workflow crlf.yml '      - run: echo hi'
+  awk '{ printf "%s\r\n", $0 }' "${WF}/crlf.yml" > "${WF}/crlf.tmp" && mv "${WF}/crlf.tmp" "${WF}/crlf.yml"
+  workflow bom.yml '      - run: echo hi'
+  { printf '\357\273\277'; cat "${WF}/bom.yml"; } > "${WF}/bom.tmp" && mv "${WF}/bom.tmp" "${WF}/bom.yml"
+  run_gate
+  grep -qE "FAIL  crlf\.yml: carriage returns" <<< "${output}"
+  grep -qE "FAIL  bom\.yml: byte-order mark" <<< "${output}"
+}
+
+@test "a symlink in the directory is refused" {
+  workflow ci.yml '      - run: echo hi'
+  ln -s ci.yml "${WF}/link.yml"
+  run_gate
+  grep -qE "FAIL  link\.yml: not a regular file" <<< "${output}"
+}
+
+@test "plain workflow files pass the directory rule" {
+  workflow ci.yml '      - run: echo hi'
+  workflow other.yaml '      - run: echo hi'
+  run_gate
+  grep -qE "ok    only plain \.yml/\.yaml files" <<< "${output}"
+}
+
+@test "zizmor is given the workflow files, not the directory, with strict collection" {
+  cat > "${TOOLS_DIR}/zizmor" <<EOF
+#!/bin/bash
+echo "\$*" > "${BATS_TEST_TMPDIR}/zizmor-args"
+exit 0
+EOF
+  chmod +x "${TOOLS_DIR}/zizmor"
+  workflow ci.yml '      - run: echo hi'
+  run_gate
+  grep -q -- "--strict-collection" "${BATS_TEST_TMPDIR}/zizmor-args"
+  grep -q -- ".github/workflows/ci.yml" "${BATS_TEST_TMPDIR}/zizmor-args"
+  ! grep -qE -- "(^| )\.github/workflows/?( |$)" "${BATS_TEST_TMPDIR}/zizmor-args"
+}
