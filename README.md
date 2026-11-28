@@ -134,6 +134,23 @@ can run as two containers: an **issuer** that runs lego and keeps the
 certificate store, and a **server** that runs Nginx as another user and can read
 nothing but the certificates. It is opt-in.
 
+> [!NOTE]
+> **Why opt-in, not the default.** Some hosts can only run an app as one
+> container: some NAS app catalogs and one-click templates install a single
+> container and offer no way to add a second one that shares its volumes.
+> Making the split the default would break those setups, so one container stays
+> the default and the split is there for setups that can run two.
+>
+> **A hardened Nginx: the idea, not the image (yet).** The server follows what a
+> hardened Nginx image is for: Nginx alone, as its own unprivileged user, on a
+> read-only filesystem, with no capabilities and no secrets in reach. It does not
+> switch to a hardened Nginx image such as Docker Hardened Images or Chainguard.
+> Those have no shell for the server's reload check, cover fewer architectures
+> than this image (no `386` or `arm/v7`), and some need a registry login to
+> pull. A server that reloads on a signal from the issuer could use such an
+> image later
+> ([#268](https://github.com/emulatorchen/docker-nginx-lego/issues/268)).
+
 What changes:
 
 | | One container | Split (`NGINX_LEGO_ROLE`) |
