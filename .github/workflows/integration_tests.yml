@@ -21,17 +21,26 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A new push to a PR cancels that PR's older run. Nothing else cancels a
+  # running run; GitHub still drops a waiting run when a newer one of the same
+  # group queues behind it.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       src: ${{ steps.filter.outputs.src }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
@@ -39,24 +48,41 @@ jobs:
               - "src/**"
               - "tests/integration/**"
 
+  # FREEMYIP_TOKEN and CERTBOT_EMAIL are repository secrets on purpose: pull
+  # requests need them, which an environment would prevent, and neither can
+  # publish anything — the token writes one TXT record, the address registers
+  # with Let's Encrypt staging. zizmor's secrets-outside-env is silenced on
+  # exactly those lines.
   integration_freemyip:
     needs: changes
-    if: needs.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+    # A fork's pull request gets no secrets, so it has nothing to test here and
+    # must not take a place in the freemyip-dns queue below.
+    if: >-
+      (needs.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     name: "DNS-01 via FreeMyIP (staging)"
     runs-on: ubuntu-latest
-    environment: automation
+    permissions:
+      contents: read
     timeout-minutes: 30
+    # One FreeMyIP TXT record serves every run: wait for any other PR's or a
+    # release's DNS-01 test (release.yml integration_check) to finish first.
+    # GitHub keeps one job waiting per group: a third arrival cancels the one
+    # waiting, which then needs a re-run.
+    concurrency:
+      group: freemyip-dns
+      cancel-in-progress: false
     steps:
       - name: Check secrets and variables
         id: check
         env:
           FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
           FREEMYIP_DOMAIN: ${{ vars.FREEMYIP_DOMAIN }}
-          FREEMYIP_TOKEN: ${{ secrets.FREEMYIP_TOKEN }}
+          FREEMYIP_TOKEN: ${{ secrets.FREEMYIP_TOKEN }} # zizmor: ignore[secrets-outside-env] — see the note on this job
         run: |
           if [ -z "${FREEMYIP_TOKEN}" ]; then
             echo "Skipping: FREEMYIP_TOKEN secret is not configured (fork or external PR)"
-            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           elif [ -z "${FREEMYIP_DOMAIN}" ] || [ -z "${FREEMYIP_CERT_NAME}" ]; then
             echo "ERROR: FREEMYIP_TOKEN is set but domain variables are missing."
             echo "Set these in: Settings → Secrets and variables → Variables"
@@ -67,17 +93,20 @@ jobs:
 
       - name: Checkout
         if: steps.check.outputs.skip != 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Set up Docker Buildx
         if: steps.check.outputs.skip != 'true'
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       - name: Build Debian image (amd64)
         if: steps.check.outputs.skip != 'true'
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./src
           file: ./src/Dockerfile
@@ -92,7 +121,7 @@ jobs:
       - name: Write FreeMyIP credentials
         if: steps.check.outputs.skip != 'true'
         env:
-          FREEMYIP_TOKEN: ${{ secrets.FREEMYIP_TOKEN }}
+          FREEMYIP_TOKEN: ${{ secrets.FREEMYIP_TOKEN }} # zizmor: ignore[secrets-outside-env] — see the note on this job
         run: |
           printf 'FREEMYIP_TOKEN=%s\n' "$FREEMYIP_TOKEN" > /tmp/lego-test-creds/freemyip.ini
 
@@ -119,7 +148,7 @@ jobs:
       - name: Issue by DNS-01 in the split, serve it, reuse it in a single container
         if: steps.check.outputs.skip != 'true'
         env:
-          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
+          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }} # zizmor: ignore[secrets-outside-env] — see the note on this job
           FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
           FREEMYIP_DOMAIN: ${{ vars.FREEMYIP_DOMAIN }}
         run: |
@@ -146,6 +175,8 @@ jobs:
     name: "Non-root smoke test (${{ matrix.variant }})"
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -158,15 +189,18 @@ jobs:
             dockerfile: ./src/Dockerfile-ubuntu
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Pinned: the default buildkit image would boot unpinned.
+          driver-opts: image=moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       - name: Build ${{ matrix.variant }} image (amd64)
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./src
           file: ${{ matrix.dockerfile }}
@@ -190,6 +224,8 @@ jobs:
     needs: [integration_freemyip, nonroot_smoke]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - run: |
           if [ "${INTEGRATION_FREEMYIP_RESULT}" = "failure" ] || \

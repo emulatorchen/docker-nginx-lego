@@ -53,7 +53,8 @@ See [Choose Your Setup](../README.md#choose-your-setup) for what each means.
 ## Update Cadence
 
 - **Lego bumps** — automated weekly via `check-lego-update` workflow; opens a
-  PR updating `ARG LEGO_VERSION` in all three Dockerfiles.
+  PR updating `ARG LEGO_VERSION` and the per-architecture checksum pins in all
+  three Dockerfiles, after verifying each tarball against lego's attestations.
 - **Nginx bumps** — automated weekly via `check-nginx-update` workflow; opens
   a PR updating the `FROM nginx:` base image line in Debian/Alpine and
   `ARG NGINX_VERSION` in the Ubuntu Dockerfile.

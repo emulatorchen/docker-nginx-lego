@@ -31,18 +31,27 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A new push to a PR cancels that PR's older run. Nothing else cancels a
+  # running run; GitHub still drops a waiting run when a newer one of the same
+  # group queues behind it.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       workflows: ${{ steps.filter.outputs.workflows }}
       dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
@@ -61,7 +70,7 @@ jobs:
       security-events: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -77,7 +86,8 @@ jobs:
 
       - name: Scan all workflows (SARIF)
         run: |
-          zizmor --format sarif .github/workflows/ > zizmor.sarif 2>/dev/null || true
+          # Files, not the directory: given a directory, zizmor skips what a .gitignore lists.
+          zizmor --format sarif .github/workflows/*.y*ml > zizmor.sarif 2>/dev/null || true
 
       - name: Upload SARIF to Security tab
         if: always()
@@ -93,7 +103,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git worktree add /tmp/base-wt "origin/${BASE_REF}" --quiet 2>/dev/null
-          zizmor --format sarif /tmp/base-wt/.github/workflows/ > /tmp/base.sarif 2>/dev/null || true
+          zizmor --format sarif /tmp/base-wt/.github/workflows/*.y*ml > /tmp/base.sarif 2>/dev/null || true
           git worktree remove /tmp/base-wt --force 2>/dev/null || true
 
           # Fingerprint: ruleId + file URI (no line — stable across refactors within a file)
@@ -147,9 +157,12 @@ jobs:
           } > /tmp/zizmor_body.txt
           BODY=$(cat /tmp/zizmor_body.txt)
 
-          CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
-            --jq '.[] | select(.body | startswith("<!-- workflow-security-zizmor -->")) | .id' \
-            2>/dev/null | head -1 || true)
+          # Exit status, not output: on an error gh prints the error body to stdout.
+          if CID=$(gh api "repos/${REPO}/issues/${PR}/comments" --jq '.[] | select(.body | startswith("<!-- workflow-security-zizmor -->")) | .id' 2>/dev/null); then
+            CID=$(printf '%s\n' "$CID" | head -1)
+          else
+            CID=""
+          fi
           if [ -n "$CID" ]; then
             gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" -f body="$BODY" >/dev/null
           else
@@ -172,7 +185,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -257,9 +270,12 @@ jobs:
           } > /tmp/actionlint_body.txt
           BODY=$(cat /tmp/actionlint_body.txt)
 
-          CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
-            --jq '.[] | select(.body | startswith("<!-- workflow-security-actionlint -->")) | .id' \
-            2>/dev/null | head -1 || true)
+          # Exit status, not output: on an error gh prints the error body to stdout.
+          if CID=$(gh api "repos/${REPO}/issues/${PR}/comments" --jq '.[] | select(.body | startswith("<!-- workflow-security-actionlint -->")) | .id' 2>/dev/null); then
+            CID=$(printf '%s\n' "$CID" | head -1)
+          else
+            CID=""
+          fi
           if [ -n "$CID" ]; then
             gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" -f body="$BODY" >/dev/null
           else
@@ -273,166 +289,86 @@ jobs:
           cat /tmp/actionlint_new.txt
           exit 1
 
-  lego_signing:
+  # The Dockerfiles install lego only when the tarball matches a pinned
+  # checksum. On a change to them, every pin must be a tarball that lego's own
+  # release workflow attested for that version.
+  lego_provenance:
     needs: changes
     if: needs.changes.outputs.dockerfiles == 'true' || github.event_name == 'workflow_dispatch'
-    name: "lego binary signing check"
+    name: "lego binary provenance check"
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 0
           persist-credentials: false
 
-      - name: Detect lego version change
-        id: lego_change
+      - name: Verify the pinned lego tarballs against lego's attestations
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: .github/lego_pins.sh --check
+
+  validate:
+    name: "Supply-chain rules"
+    runs-on: ubuntu-latest
+    # A rule that never finishes must fail the check, not hold it for six hours.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint v1.7.12 and zizmor v1.23.1
         run: |
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            BASE_VER=$(git show "origin/${BASE_REF}:src/Dockerfile" 2>/dev/null \
-              | grep '^ARG LEGO_VERSION=' | cut -d= -f2 || true)
-          else
-            BASE_VER=$(git show "HEAD~1:src/Dockerfile" 2>/dev/null \
-              | grep '^ARG LEGO_VERSION=' | cut -d= -f2 || true)
-          fi
-          PR_VER=$(grep '^ARG LEGO_VERSION=' src/Dockerfile | cut -d= -f2)
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSL --retry 3 --retry-all-errors -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          mv actionlint "${RUNNER_TEMP}/bin/"
+          curl -fsSL --retry 3 --retry-all-errors -o zizmor.tar.gz \
+            "https://github.com/zizmorcore/zizmor/releases/download/v1.23.1/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "67a8df0a14352dd81882e14876653d097b99b0f4f6b6fe798edc0320cff27aff  zizmor.tar.gz" | sha256sum -c -
+          tar xzf zizmor.tar.gz
+          mv zizmor "${RUNNER_TEMP}/bin/"
+          rm -f actionlint.tar.gz zizmor.tar.gz
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
 
-          echo "base_version=${BASE_VER}" >> "$GITHUB_OUTPUT"
-          echo "pr_version=${PR_VER}"     >> "$GITHUB_OUTPUT"
-          [ "$BASE_VER" != "$PR_VER" ] \
-            && echo "changed=true"  >> "$GITHUB_OUTPUT" \
-            || echo "changed=false" >> "$GITHUB_OUTPUT"
-          echo "lego version: base=${BASE_VER} pr=${PR_VER}"
-
-      - name: Check cosign artifact availability for lego
-        id: cosign_check
+      # The pin-versus-tag check needs an authenticated gh; without it that
+      # check reports "skip" and a pin naming the wrong version passes.
+      #
+      # On a pull request these are the pull request's own rules, the only copy
+      # that knows a rule it adds or fixes. The pull request can edit them and
+      # this file, so rules-gate (rules_gate.yml) also applies master's rules,
+      # running from master.
+      - name: Check the rules
         env:
-          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
-        run: |
-          VER="${LEGO_VER}"
-          PEM_STATUS=$(curl -sfIo /dev/null -w '%{http_code}' \
-            "https://github.com/go-acme/lego/releases/download/v${VER}/lego_v${VER}_checksums.txt.pem" || echo 0)
-          SIG_STATUS=$(curl -sfIo /dev/null -w '%{http_code}' \
-            "https://github.com/go-acme/lego/releases/download/v${VER}/lego_v${VER}_checksums.txt.sig" || echo 0)
-          if [ "$PEM_STATUS" = "200" ] && [ "$SIG_STATUS" = "200" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-            echo "Cosign artifacts available for lego v${VER}"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "Cosign artifacts NOT available for lego v${VER} (pem=${PEM_STATUS} sig=${SIG_STATUS})"
-          fi
-
-      - name: Install cosign v3.0.5
-        if: steps.cosign_check.outputs.available == 'true'
-        run: |
-          curl -fsSL --retry 3 --retry-all-errors -o cosign \
-            "https://github.com/sigstore/cosign/releases/download/v3.0.5/cosign-linux-amd64"
-          echo "db15cc99e6e4837daabab023742aaddc3841ce57f193d11b7c3e06c8003642b2  cosign" | sha256sum -c -
-          sudo mv cosign /usr/local/bin/cosign
-          sudo chmod +x /usr/local/bin/cosign
-
-      - name: Verify lego cosign signature
-        if: steps.cosign_check.outputs.available == 'true'
-        id: cosign_verify
-        env:
-          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
-        run: |
-          VER="${LEGO_VER}"
-          BASE="https://github.com/go-acme/lego/releases/download/v${VER}"
-          curl -fsSL --retry 3 --retry-all-errors -o /tmp/lego_checksums.txt "${BASE}/lego_v${VER}_checksums.txt"
-          curl -fsSL --retry 3 --retry-all-errors -o /tmp/lego_checksums.pem "${BASE}/lego_v${VER}_checksums.txt.pem"
-          curl -fsSL --retry 3 --retry-all-errors -o /tmp/lego_checksums.sig "${BASE}/lego_v${VER}_checksums.txt.sig"
-
-          if cosign verify-blob \
-            --certificate /tmp/lego_checksums.pem \
-            --signature   /tmp/lego_checksums.sig \
-            --certificate-identity \
-              "https://github.com/go-acme/lego/.github/workflows/release.yml@refs/heads/master" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            /tmp/lego_checksums.txt; then
-            echo "verified=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "verified=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Post lego signing comment (same-repo PRs only)
-        if: |
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository
-        env:
+          BLOCK_SEVERITY: CRITICAL,HIGH
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
-          CHANGED: ${{ steps.lego_change.outputs.changed }}
-          AVAILABLE: ${{ steps.cosign_check.outputs.available }}
-          VERIFIED: ${{ steps.cosign_verify.outputs.verified }}
-        run: |
-          VER="${LEGO_VER}"
-
-          if [ "$AVAILABLE" != "true" ]; then
-            echo "cosign artifacts not available for lego v${VER} — skipping PR comment"
-            CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
-              --jq '.[] | select(.body | startswith("<!-- workflow-security-lego -->")) | .id' \
-              2>/dev/null | head -1 || true)
-            if [ -n "$CID" ]; then
-              echo "Deleting stale cosign comment (${CID})..."
-              gh api --method DELETE "repos/${REPO}/issues/comments/${CID}" >/dev/null
-            fi
-            exit 0
-          fi
-
-          if [ "$CHANGED" = "true" ]; then
-            if [ "$VERIFIED" = "true" ]; then
-              STATUS="✅ cosign signature verified for lego v${VER}"
-            else
-              STATUS="❌ cosign signature **FAILED** for lego v${VER} — do not merge"
-            fi
-          else
-            STATUS="ℹ️ lego version unchanged (v${VER}). Informational cosign check: ✅ signature valid."
-          fi
-
-          BODY=$(printf '%s\n\n## lego Binary Signing Check\n\n%s\n' \
-            "<!-- workflow-security-lego -->" "$STATUS")
-
-          CID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
-            --jq '.[] | select(.body | startswith("<!-- workflow-security-lego -->")) | .id' \
-            2>/dev/null | head -1 || true)
-          if [ -n "$CID" ]; then
-            gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" -f body="$BODY" >/dev/null
-          else
-            gh api --method POST "repos/${REPO}/issues/${PR}/comments" -f body="$BODY" >/dev/null
-          fi
-
-      - name: Fail on cosign verification failure (new version only)
-        if: |
-          steps.lego_change.outputs.changed == 'true' &&
-          steps.cosign_check.outputs.available == 'true' &&
-          steps.cosign_verify.outputs.verified == 'false'
-        env:
-          LEGO_VER: ${{ steps.lego_change.outputs.pr_version }}
-        run: |
-          echo "cosign signature verification FAILED for lego v${LEGO_VER}"
-          exit 1
+        run: ./scripts/validate.sh
 
   workflow_security_status:
     name: "Workflow security status"
-    needs: [zizmor, actionlint, lego_signing]
+    needs: [zizmor, actionlint, lego_provenance, validate]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - env:
           ZIZMOR_RESULT: ${{ needs.zizmor.result }}
           ACTIONLINT_RESULT: ${{ needs.actionlint.result }}
-          LEGO_RESULT: ${{ needs.lego_signing.result }}
+          LEGO_RESULT: ${{ needs.lego_provenance.result }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
         run: |
           if [ "$ZIZMOR_RESULT"     = "failure" ] || \
              [ "$ACTIONLINT_RESULT" = "failure" ] || \
              [ "$LEGO_RESULT"       = "failure" ]; then
             exit 1
           fi
+          # Never skipped, so anything but success is a failure.
+          [ "$VALIDATE_RESULT" = "success" ] || exit 1

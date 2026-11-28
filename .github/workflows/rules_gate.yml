@@ -1,0 +1,281 @@
+name: "rules-gate"
+
+# Master's rules, applied to a pull request's files.
+#
+# workflow-security's "Supply-chain rules" runs the pull request's own
+# scripts/validate.sh from the pull request's own workflow file: the only check
+# that knows a rule the pull request adds or fixes, and one the pull request can
+# edit. This workflow runs from master whatever the pull request contains
+# (pull_request_target), reads the pull request's files as data and runs
+# nothing from them:
+#   - a pull request that leaves the check alone must pass master's rules;
+#   - one that changes the check (.github/rules_gate.sh says what counts) passes
+#     only with the owner's approval of this run, master's findings in the
+#     run's summary.
+# No job holds a secret or can write; the token only reads the repository.
+#
+# Any workflow can name a job "Rules gate status", so the verdict that counts is
+# a check run "Rules gate verdict" posted by the owner's GitHub App, which only
+# the verdict job below can act as.
+#
+# Settings it relies on, not made yet: an environment gate-change with the owner
+# as required reviewer and master as its only branch; the owner's GitHub App
+# (checks: write only) with its client ID in the repository variable
+# RULES_GATE_APP_CLIENT_ID and its private key as RULES_GATE_APP_KEY in an
+# environment rules-gate that admits master only; and "Rules gate verdict" from
+# that app required by the master ruleset. Until then a change to the check
+# fails here, because no approval is recorded, and no verdict is posted.
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] — no secrets, read-only token, the pull request is only read
+    branches:
+      - "main"
+      - "master"
+
+permissions: {}
+
+concurrency:
+  # Keyed by pull request: a new push cancels that pull request's older run only.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  inspect:
+    name: "Master's rules on this pull request"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      check_changed: ${{ steps.check.outputs.changed }}
+      rules: ${{ steps.rules.outputs.result }}
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          path: base
+
+      - name: Install actionlint v1.7.12 and zizmor v1.23.1
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSL --retry 3 --retry-all-errors -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          mv actionlint "${RUNNER_TEMP}/bin/"
+          curl -fsSL --retry 3 --retry-all-errors -o zizmor.tar.gz \
+            "https://github.com/zizmorcore/zizmor/releases/download/v1.23.1/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "67a8df0a14352dd81882e14876653d097b99b0f4f6b6fe798edc0320cff27aff  zizmor.tar.gz" | sha256sum -c -
+          tar xzf zizmor.tar.gz
+          mv zizmor "${RUNNER_TEMP}/bin/"
+          rm -f actionlint.tar.gz zizmor.tar.gz
+
+      # The pull request's head and the commit it branched from, as files only.
+      # info/attributes switches off every attribute the pull request's
+      # .gitattributes could set (line endings, filters, encodings), so the
+      # checkout holds the bytes GitHub runs; symlinks become plain files and
+      # LFS is not fetched. Not git archive: export-ignore can make it leave
+      # files out.
+      - name: Fetch the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git -C base fetch --no-tags --depth=1 origin "+refs/pull/${PR}/head:refs/remotes/pull/head"
+          if [ "$(git -C base rev-parse refs/remotes/pull/head)" != "${HEAD_SHA}" ]; then
+            echo "::error::the pull request moved on since this run started; the run for the new commit decides"
+            exit 1
+          fi
+          fork_point=$(gh api "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.merge_base_commit.sha')
+          if ! [[ "${fork_point}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::GitHub gave no merge base for this pull request"
+            exit 1
+          fi
+          git -C base fetch --no-tags --depth=1 origin "${fork_point}"
+          mkdir -p base/.git/info
+          echo '* -text -eol -ident -filter -working-tree-encoding' > base/.git/info/attributes
+          GIT_LFS_SKIP_SMUDGE=1 git -C base -c core.symlinks=false worktree add --detach "${RUNNER_TEMP}/pr" "${HEAD_SHA}"
+          # What the pull request changes, counted from where it branched off,
+          # as GitHub shows it. A moved line is a removed and an added one.
+          git -C base diff --no-renames --name-only -z "${fork_point}" "${HEAD_SHA}" > "${RUNNER_TEMP}/changed.z"
+          git -C base diff --no-renames --no-ext-diff --no-textconv --text -U0 \
+            "${fork_point}" "${HEAD_SHA}" -- .github/workflows > "${RUNNER_TEMP}/workflows.diff"
+
+      # Output that quotes the pull request is printed with workflow commands
+      # stopped, so no file name or line of it can mask a finding or fake one.
+      - name: Find out whether the pull request changes the check
+        id: check
+        run: |
+          set +e
+          bash base/.github/rules_gate.sh "${RUNNER_TEMP}/changed.z" "${RUNNER_TEMP}/workflows.diff" \
+            > "${RUNNER_TEMP}/touched.txt"
+          rc=$?
+          set -e
+          stop=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+          echo "::stop-commands::${stop}"
+          cat "${RUNNER_TEMP}/touched.txt"
+          echo "::${stop}::"
+          case "${rc}" in
+            0) echo "changed=false" >> "$GITHUB_OUTPUT" ;;
+            1) echo "changed=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::rules_gate.sh failed (exit ${rc})"; exit 1 ;;
+          esac
+
+      # The verdict is the status job's; this step only records the result, so
+      # the owner sees master's findings even when approving a rule change.
+      # The tools go in through TOOLS_DIR, not GITHUB_PATH: nothing in this
+      # workflow writes to the runner's environment files.
+      - name: Run master's rules on the pull request's files
+        id: rules
+        env:
+          BLOCK_SEVERITY: CRITICAL,HIGH
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          lego_pins="${PWD}/base/.github/lego_pins.sh"
+          TOOLS_DIR="${RUNNER_TEMP}/bin" VALIDATE_ROOT="${RUNNER_TEMP}/pr" \
+            bash base/scripts/validate.sh > "${RUNNER_TEMP}/rules.txt" 2>&1
+          rc=$?
+          # A change to a Dockerfile: lego's pins as master's lego_pins.sh checks them.
+          # Not piped into grep -q: under pipefail an early grep exit fails a pipe
+          # still writing a long list, and the lego check would be skipped.
+          if tr '\0' '\n' < "${RUNNER_TEMP}/changed.z" | grep -E '^src/Dockerfile' > /dev/null; then
+            printf '\n== lego pins (master'\''s lego_pins.sh) ==\n' >> "${RUNNER_TEMP}/rules.txt"
+            if ! (cd "${RUNNER_TEMP}/pr" && bash "${lego_pins}" --check \
+                  src/Dockerfile src/Dockerfile-alpine src/Dockerfile-ubuntu) >> "${RUNNER_TEMP}/rules.txt" 2>&1; then
+              echo "  FAIL  lego pins not verified" >> "${RUNNER_TEMP}/rules.txt"
+              rc=1
+            fi
+          fi
+          set -e
+          stop=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+          echo "::stop-commands::${stop}"
+          cat "${RUNNER_TEMP}/rules.txt"
+          echo "::${stop}::"
+          if [ "${rc}" -eq 0 ]; then result=pass; else result=fail; fi
+          echo "result=${result}" >> "$GITHUB_OUTPUT"
+          # Indented, not fenced: a quoted line cannot end an indented block.
+          {
+            echo "### Master's rules on this pull request: ${result}"
+            echo
+            { grep -E '^  (FAIL|warn) ' "${RUNNER_TEMP}/rules.txt" || echo "no findings"; } | sed 's/^/    /'
+            if [ -s "${RUNNER_TEMP}/touched.txt" ]; then
+              echo
+              echo "### This pull request changes the check"
+              echo
+              sed 's/^/    /' "${RUNNER_TEMP}/touched.txt"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Runs only for a change to the check. The environment's required reviewer is
+  # what holds this job; the step then confirms the owner really approved this
+  # run, so an environment without a reviewer (GitHub creates it bare on first
+  # use) passes nothing.
+  owner_approval:
+    name: "Owner approves a change to the check"
+    needs: inspect
+    if: needs.inspect.outputs.check_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: gate-change
+    permissions:
+      actions: read
+    steps:
+      - name: Confirm the owner approved this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          REVIEWER: emulatorchen
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPO}/actions/runs/${RUN_ID}/approvals" > "${RUNNER_TEMP}/approvals.json"
+          n=$(jq --arg who "${REVIEWER}" \
+            '[.[] | select(.state == "approved" and .user.login == $who and any(.environments[]; .name == "gate-change"))] | length' \
+            "${RUNNER_TEMP}/approvals.json")
+          if [ "${n}" -gt 0 ]; then
+            echo "${REVIEWER} approved this run."
+          else
+            echo "::error::no approval by ${REVIEWER} is recorded for this run; the gate-change environment needs ${REVIEWER} as its required reviewer"
+            exit 1
+          fi
+
+  status:
+    name: "Rules gate status"
+    needs: [inspect, owner_approval]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Decide
+        env:
+          INSPECT: ${{ needs.inspect.result }}
+          CHECK_CHANGED: ${{ needs.inspect.outputs.check_changed }}
+          RULES: ${{ needs.inspect.outputs.rules }}
+          APPROVAL: ${{ needs.owner_approval.result }}
+        run: |
+          if [ "${INSPECT}" != "success" ]; then
+            echo "::error::the pull request could not be inspected (${INSPECT})"
+            exit 1
+          fi
+          if [ "${CHECK_CHANGED}" = "true" ]; then
+            if [ "${APPROVAL}" = "success" ]; then
+              echo "The pull request changes the check and the owner approved this run (master's rules: ${RULES})."
+              exit 0
+            fi
+            echo "::error::the pull request changes the check, so only the owner's approval of this run passes it (${APPROVAL})"
+            exit 1
+          fi
+          if [ "${RULES}" = "pass" ]; then
+            echo "Master's rules pass."
+            exit 0
+          fi
+          echo "::error::master's rules fail on this pull request; the run's summary lists the findings"
+          exit 1
+
+  # The verdict a pull request cannot forge. A pull request's own workflows
+  # can post a check of any name, but only as GitHub Actions; the ruleset takes
+  # "Rules gate verdict" from the owner's app alone. Its key sits in the
+  # rules-gate environment, which admits master's runs only, and a pull
+  # request's own workflows never run as master. A cancelled or failed status
+  # posts a failure.
+  verdict:
+    name: "Post the verdict as the rules-gate app"
+    needs: status
+    if: ${{ always() && vars.RULES_GATE_APP_CLIENT_ID != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: rules-gate
+    permissions: {}
+    steps:
+      - name: Get a token for the rules-gate app
+        id: app
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ vars.RULES_GATE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RULES_GATE_APP_KEY }}
+          permission-checks: write
+
+      - name: Post the verdict on the pull request's commit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          STATUS: ${{ needs.status.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "${STATUS}" = "success" ]; then conclusion=success; else conclusion=failure; fi
+          gh api --method POST "repos/${REPO}/check-runs" \
+            -f name="Rules gate verdict" -f head_sha="${HEAD_SHA}" \
+            -f status=completed -f conclusion="${conclusion}" -f details_url="${RUN_URL}" \
+            -f "output[title]=Rules gate: ${conclusion}" \
+            -f "output[summary]=Rules gate status: ${STATUS}. The run linked here has the details." > /dev/null
+          echo "Posted Rules gate verdict: ${conclusion} (${STATUS})"

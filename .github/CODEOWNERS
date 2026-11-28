@@ -1,3 +1,9 @@
-# Workflow changes require owner review to prevent check bypass
-.github/workflows/ @emulatorchen
-.github/CODEOWNERS @emulatorchen
+# Everything that decides what is built, checked or published needs the owner's
+# review: the workflows, the scripts they run (the supply-chain gate and the
+# release/withdraw steps among them), the image sources, the tests that gate a
+# merge, and the scanner's ignore list.
+/.github/ @emulatorchen
+/scripts/ @emulatorchen
+/src/ @emulatorchen
+/tests/ @emulatorchen
+/.trivyignore @emulatorchen
