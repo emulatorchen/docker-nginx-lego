@@ -326,6 +326,22 @@ _issue_fake_cert() {
     [ "$(stat -c '%a' "${LEGO_PATH}/certificates/example.com.key")" = "600" ]
 }
 
+@test "get_certificate_lego: the issuer role issues a dns- certificate exactly like the single container" {
+    # DNS-01 is a must in the split: the issuer must load the same credentials
+    # and call lego with the same arguments as NGINX_LEGO_ROLE=all.
+    _install_lego_mock
+    unset NGINX_LEGO_ROLE
+    run get_certificate_lego "example.com.dns-cloudflare_1" "example.com" "ecdsa"
+    [ "${status}" -eq 0 ]
+    cp "${LEGO_ARGS_FILE}" "${BATS_TEST_TMPDIR}/all.args"
+
+    NGINX_LEGO_ROLE=issuer run get_certificate_lego "example.com.dns-cloudflare_1" "example.com" "ecdsa"
+    [ "${status}" -eq 0 ]
+    diff "${BATS_TEST_TMPDIR}/all.args" "${LEGO_ARGS_FILE}"
+    grep -q "CLOUDFLARE_DNS_API_TOKEN=test-token-cf-1" "${LEGO_ARGS_FILE}"
+    grep -qx -- "--dns" "${LEGO_ARGS_FILE}"
+}
+
 @test "load_credentials: an unreadable credentials file names the fix" {
     [ "$(id -u)" -ne 0 ] || skip "root can read anything; the smoke test covers this as uid 101"
     local dir="${BATS_TEST_TMPDIR}/creds"

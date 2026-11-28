@@ -935,10 +935,21 @@ store_state() {
   [ "$(stat -c '%a %g' "${root}/live/local-cert/privkey.pem")" == "640 ${group}" ]
 }
 
-@test "share_certificates keeps the account key, metadata, credentials, archive and dhparams private" {
+@test "share_certificates shares the DH parameters, which are public, so a separate server can use them" {
+  local root="${BATS_TEST_TMPDIR}/store" group
+  group="$(cert_test_group)"
+  make_cert_store "${root}"
+
+  NGINX_LEGO_CERT_GROUP="${group}" share_certificates "${root}"
+
+  [ "$(stat -c '%a %g' "${root}/dhparams")" == "750 ${group}" ]
+  [ "$(stat -c '%a %g' "${root}/dhparams/dhparam.pem")" == "640 ${group}" ]
+}
+
+@test "share_certificates keeps the account key, metadata, credentials and archive private" {
   local root="${BATS_TEST_TMPDIR}/store" before after
   local paths=(. accounts accounts/acme/keys/account.key archive archive/example.org.key
-               dhparams dhparams/dhparam.pem certificates/example.org.json cloudflare.ini)
+               certificates/example.org.json cloudflare.ini)
   make_cert_store "${root}"
   before="$(cd "${root}" && stat -c '%n %a %g' "${paths[@]}")"
 

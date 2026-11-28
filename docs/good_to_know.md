@@ -177,9 +177,10 @@ To keep that as small as possible:
 - Keep the host kernel patched. A kernel bug can turn any container user into
   root, and several were exploited in 2026.
 
-Running Nginx and lego in separate containers, so that Nginx never holds the DNS
-credentials, is planned as an opt-in setup
-([#20](https://github.com/emulatorchen/docker-nginx-lego/issues/20)).
+To take the DNS credentials and the ACME account out of Nginx's reach entirely,
+run Nginx and lego in separate containers: set `NGINX_LEGO_ROLE`, as in
+[Run Nginx and lego in Separate Containers](./advanced_usage.md#run-nginx-and-lego-in-separate-containers).
+Nginx then runs as another uid, read-only, and can read only the certificates.
 
 ### `docker exec` and images built on top
 `docker exec` runs as uid 101 as well. An image built `FROM` this one starts as

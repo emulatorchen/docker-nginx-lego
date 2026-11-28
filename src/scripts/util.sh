@@ -669,8 +669,10 @@ auto_enable_configs() {
 # to the certificate files: certificates/, live/ and each live/<name>/ become
 # 0750, and the certificates and keys 0640, all owned by that group. The local CA
 # writes real files into live/<name>/, so those are shared as well; lego only
-# leaves symlinks there. The ACME account key (accounts/), lego's metadata
-# (*.json), DNS credentials (*.ini), archive/ and dhparams/ are never touched, and
+# leaves symlinks there. dhparams/ and its *.pem are shared the same way: DH
+# parameters are public values, and a server in its own container (the split,
+# NGINX_LEGO_ROLE) has to read them. The ACME account key (accounts/), lego's
+# metadata (*.json), DNS credentials (*.ini) and archive/ are never touched, and
 # no symlink is ever followed, so nothing outside these directories can change.
 #
 # Unset or empty leaves every permission as lego wrote it. A group this process
@@ -697,6 +699,8 @@ share_certificates() {
         find -P "${root}/live" -maxdepth 1 -type d -print0 2>/dev/null || true
         find -P "${root}/certificates" -maxdepth 1 -type f \( -name '*.crt' -o -name '*.key' \) -print0 2>/dev/null || true
         find -P "${root}/live" -mindepth 2 -maxdepth 2 -type f -name '*.pem' -print0 2>/dev/null || true
+        find -P "${root}/dhparams" -maxdepth 0 -type d -print0 2>/dev/null || true
+        find -P "${root}/dhparams" -maxdepth 1 -type f -name '*.pem' -print0 2>/dev/null || true
     )
     if [ ${#paths[@]} -eq 0 ]; then
         debug "No certificates in '${root}' to share with group '${group}' yet"
@@ -777,4 +781,154 @@ check_storage_writable() {
     error "  docker run --rm --user 0 -v <your volume or host directory>:${root} <this image> chown -R ${owner} ${root}"
     error "or on the host: sudo chown -R ${owner} <host directory>"
     return 1
+}
+
+# FORK: the functions below do not exist upstream. Do not overwrite this file
+# from upstream wholesale; see UPSTREAM_SYNC.md.
+#
+# NGINX_LEGO_ROLE splits the image in two on request. Everything runs as one
+# uid, so code in an Nginx worker could otherwise read the DNS credentials and
+# the ACME account key. In the split, an issuer runs lego and owns the store,
+# and a server runs Nginx as another uid with the store mounted read-only:
+#   all     (default) Nginx and lego in one container, as always
+#   issuer  lego, the renewal loop and the store; no Nginx, no ports
+#   server  Nginx only, serving what an issuer keeps in the store
+
+# Prints this container's role; an unknown one is an error.
+nginx_lego_role() {
+    local role="${NGINX_LEGO_ROLE:-all}"
+    case "${role}" in
+        all|issuer|server) echo "${role}" ;;
+        *)
+            error "NGINX_LEGO_ROLE is '${role}'; it must be all, issuer or server."
+            return 1
+            ;;
+    esac
+}
+
+# An issuer has to share what it issues, or the server could not read a key.
+check_issuer_ready() {
+    if [ -n "${NGINX_LEGO_CERT_GROUP:-}" ]; then
+        return 0
+    fi
+    error "An issuer needs NGINX_LEGO_CERT_GROUP: without it the server cannot read the certificates and keys."
+    error "Set NGINX_LEGO_CERT_GROUP to a group id and give that group to both containers (docker run --group-add, compose 'group_add', Kubernetes 'supplementalGroups'), then start again."
+    return 1
+}
+
+# Enables the configs whose files exist now and reloads Nginx, unless the
+# configuration does not pass 'nginx -t'.
+reload_nginx() {
+    auto_enable_configs
+    if ! nginx -t; then
+        error "Nginx configuration is invalid. Check the logs for details."
+        return 0
+    fi
+    nginx -s reload
+}
+
+# What follows a renewal pass. With Nginx in the same container, reload it. The
+# issuer has none: it writes a new mark into the store instead, which the
+# server watches (server_watch_once). The mark changes on every pass, even
+# twice in one second.
+#
+# $1: Root of the certificate store (default: LEGO_PATH, or /etc/letsencrypt).
+after_renewal() {
+    local root="${1:-${LEGO_PATH:-/etc/letsencrypt}}" role
+    role="$(nginx_lego_role)" || return 1
+    if [ "${role}" = "issuer" ]; then
+        printf '%s %s%s\n' "$(date +%s)" "${RANDOM}" "${RANDOM}" > "${root}/.nginx-lego-renewed"
+        debug "Marked the renewal for the server in '${root}/.nginx-lego-renewed'"
+        return 0
+    fi
+    reload_nginx
+}
+
+# The uid that owns the certificate store, which is the issuer's: the issuer
+# stops at start when it cannot write the store (check_storage_writable).
+#
+# $1: Root of the certificate store.
+store_owner() {
+    stat -c %u "$1"
+}
+
+# The server must reach nothing that only the issuer may: the ACME account, the
+# DNS credentials, and a writable store. Running as root or as the issuer's uid
+# reaches all of it, and a store mounted read-write lets code in an Nginx worker
+# change the certificates. The account and the credentials are also checked by
+# themselves, since a store without an account yet (or with a local CA) proves
+# nothing about the uid.
+#
+# $1: Root of the certificate store (default: LEGO_PATH, or /etc/letsencrypt).
+check_server_isolation() {
+    local root="${1:-${LEGO_PATH:-/etc/letsencrypt}}" uid ini
+    local fix="Run the server as another uid than the issuer, for example 102:0 (docker run --user, compose 'user'), with only the certificate group added."
+    uid="$(id -u)"
+    if [ "${uid}" -eq 0 ]; then
+        error "This server runs as root, which can read everything the issuer keeps."
+        error "${fix}"
+        return 1
+    fi
+    if [ -e "${root}" ] && [ "$(store_owner "${root}")" = "${uid}" ]; then
+        error "This server runs as uid ${uid}, which owns the certificate store '${root}': the issuer's uid."
+        error "${fix}"
+        return 1
+    fi
+    if [ -e "${root}/accounts" ] && [ -r "${root}/accounts" ]; then
+        error "This server can read '${root}/accounts', the issuer's ACME account."
+        error "${fix}"
+        return 1
+    fi
+    while IFS= read -r -d $'\0' ini; do
+        if [ -r "${ini}" ]; then
+            error "This server can read '${ini}', the issuer's DNS credentials."
+            error "Keep credential files 0600 and owned by the issuer, or mount them into the issuer only (CERTBOT_DNS_CREDENTIALS_DIR). ${fix}"
+            return 1
+        fi
+    done < <(find "${root}" -maxdepth 2 -type f -name '*.ini' -print0 2>/dev/null || true)
+    if [ -w "${root}" ]; then
+        error "This server can write the certificate store '${root}'."
+        error "Mount the store read-only in the server: -v <volume>:${root}:ro (compose '<volume>:${root}:ro')."
+        return 1
+    fi
+    return 0
+}
+
+# One look at the issuer's mark. When it changed since the last look, reload
+# Nginx once; a configuration that fails 'nginx -t' is reported and left as it
+# is until the next renewal, as in the single container.
+#
+# $1: Root of the certificate store (default: LEGO_PATH, or /etc/letsencrypt).
+# $2: File that keeps the last mark seen.
+server_watch_once() {
+    local root="${1:-${LEGO_PATH:-/etc/letsencrypt}}" seen="${2:?file that keeps the last mark}"
+    local mark last=""
+    if [ ! -f "${root}/.nginx-lego-renewed" ]; then
+        return 0
+    fi
+    mark="$(cat "${root}/.nginx-lego-renewed")"
+    if [ -f "${seen}" ]; then
+        last="$(cat "${seen}")"
+    fi
+    if [ "${mark}" = "${last}" ]; then
+        return 0
+    fi
+    info "The issuer renewed certificates; reloading Nginx"
+    reload_nginx
+    printf '%s\n' "${mark}" > "${seen}"
+}
+
+# A server may run with a read-only root and /etc/nginx/conf.d on a tmpfs, which
+# hides the image's own files there: redirector.conf carries the port 80
+# redirect and the path HTTP-01 challenges are served from. The image keeps a
+# copy of them; put back any that is missing.
+restore_image_conf() {
+    local src="${NGINX_LEGO_IMAGE_CONF:-/usr/local/share/nginx-lego/conf.d}" file
+    for file in "${src}"/*; do
+        [ -f "${file}" ] || continue
+        if [ ! -e "/etc/nginx/conf.d/${file##*/}" ]; then
+            cp "${file}" /etc/nginx/conf.d/
+            debug "Restored the image's '${file##*/}' into /etc/nginx/conf.d"
+        fi
+    done
 }

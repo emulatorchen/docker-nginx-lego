@@ -1,5 +1,17 @@
 # Changelog
 
+### lego5.6.0-nginx1.31.10
+- **New, opt-in:** `NGINX_LEGO_ROLE=issuer` and `NGINX_LEGO_ROLE=server` run lego
+  and Nginx in separate containers from the same image. The server runs as
+  another uid, read-only, with the certificate store mounted read-only, so code
+  in an Nginx worker can no longer reach the DNS credentials or the ACME account
+  ([what changes and how to switch](../README.md#splitting-nginx-and-lego),
+  [details](./advanced_usage.md#run-nginx-and-lego-in-separate-containers),
+  [example](../examples/docker-compose-split.yml)). Without it, nothing changes.
+- **Changed:** `NGINX_LEGO_CERT_GROUP` now also shares `dhparams/` and its
+  `*.pem` (`0750`, `0640`): DH parameters are public, and a separate server has
+  to read them. Without `NGINX_LEGO_CERT_GROUP`, their permissions stay as they were.
+
 ### lego5.6.0-nginx1.31.8
 - **Breaking:** every image (Debian, Alpine and Ubuntu, on every architecture)
   runs as the unprivileged user `101:101` instead of root. An existing

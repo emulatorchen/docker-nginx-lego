@@ -1,0 +1,46 @@
+# Nginx and lego in separate containers, from the same image. The issuer runs
+# lego and holds the DNS credentials and the ACME account; the server runs Nginx
+# as another uid, read-only, with the certificates mounted read-only and nothing
+# else. See docs/advanced_usage.md, "Run Nginx and lego in Separate Containers".
+services:
+  issuer:
+    image: emulator/docker-nginx-lego:latest
+    restart: unless-stopped
+    group_add: ["10443"]
+    env_file:
+      - ./nginx-lego.env
+    environment:
+      - NGINX_LEGO_ROLE=issuer
+      - NGINX_LEGO_CERT_GROUP=10443
+      - CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - acme_challenges:/var/www/letsencrypt              # HTTP-01 only
+      - ./user_conf.d:/etc/nginx/user_conf.d:ro
+      - ./dns_credentials:/etc/letsencrypt/credentials:ro  # DNS-01 only; nowhere else
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  server:
+    image: emulator/docker-nginx-lego:latest
+    restart: unless-stopped
+    user: "102:0"
+    group_add: ["10443"]
+    environment:
+      - NGINX_LEGO_ROLE=server
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - letsencrypt:/etc/letsencrypt:ro
+      - acme_challenges:/var/www/letsencrypt:ro           # HTTP-01 only
+      - ./user_conf.d:/etc/nginx/user_conf.d:ro
+    read_only: true
+    tmpfs: [/run, /var/cache/nginx, /etc/nginx/conf.d, /tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on: [issuer]
+
+volumes:
+  letsencrypt:
+  acme_challenges:

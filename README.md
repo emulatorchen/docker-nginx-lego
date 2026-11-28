@@ -1,12 +1,19 @@
 # docker-nginx-lego
 
 > [!WARNING]
-> **Breaking change from `lego5.6.0-nginx1.31.8`: the image no longer runs as root.**
-> Every image (Debian, Alpine and Ubuntu, on every architecture) now runs as the
-> unprivileged user `101:101`. `latest`, `latest-alpine` and `latest-ubuntu` move
-> to it on release; `lego5.4.1-nginx1.31.8` and older still run as root.
-> **An existing setup needs a one-time migration.** Read
-> [Upgrading to the Non-Root Image](#upgrading-to-the-non-root-image) before you pull.
+> **Two changes to know before you pull:**
+> 1. **From `lego5.6.0-nginx1.31.8` the image no longer runs as root.** Every image
+>    (Debian, Alpine and Ubuntu, on every architecture) runs as the unprivileged user
+>    `101:101`; `lego5.4.1-nginx1.31.8` and older still run as root. **An existing
+>    setup needs a one-time migration:** read
+>    [Upgrading to the Non-Root Image](#upgrading-to-the-non-root-image).
+> 2. **From `lego5.6.0-nginx1.31.10`, Nginx and lego can
+>    also run in separate containers.** This is opt-in: a single container works as
+>    before unless you set `NGINX_LEGO_ROLE`. One thing changes for everyone who sets
+>    `NGINX_LEGO_CERT_GROUP`: the Diffie-Hellman parameters are shared with that group
+>    too. Read [Splitting Nginx and lego](#splitting-nginx-and-lego).
+>
+> Not sure which setup to run? See [Choose Your Setup](#choose-your-setup).
 
 Automatically create and renew website SSL certificates using the
 [Let's Encrypt][1] free certificate authority and its client [*lego*][2].
@@ -42,6 +49,7 @@ The upstream author [suggested this fork][pr373] and offered to link to it.
 - **150+ DNS providers** supported natively by lego (see [lego provider list][lego-providers]).
 - **Runs without root**: Nginx, lego and every script run as the unprivileged user `101:101` ([details](./docs/good_to_know.md#running-as-non-root)).
 - Can [share the certificates](./docs/advanced_usage.md#share-certificates-with-another-container) with another container through a group, without handing out root.
+- Can run Nginx and lego in [separate containers](#splitting-nginx-and-lego), so Nginx never holds the DNS credentials (opt-in).
 
 
 
@@ -74,6 +82,21 @@ upstream author][pr373] — thanks for the excellent foundation.
 3. You will need to have [Docker][11] installed.
 
 
+## Choose Your Setup
+There are three ways to run this image. The difference that matters is what an
+attacker reaches if a bug in Nginx lets them run code inside an Nginx worker
+([why this is not theoretical](./docs/good_to_know.md#what-it-means-for-security)).
+
+| Setup | Tags | Runs as | A compromised Nginx worker can reach | How |
+|---|---|---|---|---|
+| Root image (old) | `lego5.4.1-nginx1.31.8` and older | root, workers as `nginx` | the certificates and keys | stay on that tag; it gets no further fixes |
+| One container (default) | `lego5.6.0-nginx1.31.8` and newer, `latest*` | `101:101` | the certificates and keys, **the DNS credentials, the ACME account, and the store, to change it** | [Upgrading to the Non-Root Image](#upgrading-to-the-non-root-image) |
+| Split (opt-in) | `lego5.6.0-nginx1.31.10` and newer | issuer `101:101`, server `102:0` | the certificates, keys and DH parameters, read-only | [Splitting Nginx and lego](#splitting-nginx-and-lego) |
+
+Pick the split when Nginx faces the internet and your DNS tokens can do real
+damage (a token for your whole DNS zone, say). One container is simpler and is
+fine with tokens limited to the zone's TXT records.
+
 ## Upgrading to the Non-Root Image
 Starting with `lego5.6.0-nginx1.31.8` the container runs as uid `101`, gid `101`
 (the `nginx` user of the official Nginx images) instead of root. Nginx, lego and
@@ -102,7 +125,52 @@ in [Running as Non-Root](./docs/good_to_know.md#running-as-non-root).
 > attacker run code in a worker also exposes your DNS credentials and ACME
 > account key. Read [What it means for security](./docs/good_to_know.md#what-it-means-for-security):
 > use least-privilege DNS tokens, and run the container with
-> `--cap-drop ALL --security-opt no-new-privileges`.
+> `--cap-drop ALL --security-opt no-new-privileges`, or split Nginx and lego as
+> below.
+
+## Splitting Nginx and lego
+Starting with `lego5.6.0-nginx1.31.10`, the same image
+can run as two containers: an **issuer** that runs lego and keeps the
+certificate store, and a **server** that runs Nginx as another user and can read
+nothing but the certificates. It is opt-in.
+
+What changes:
+
+| | One container | Split (`NGINX_LEGO_ROLE`) |
+|---|---|---|
+| Reads the DNS credentials | Nginx's workers and lego (both uid `101`) | lego only, in the issuer |
+| Can use the ACME account | Nginx's workers and lego | lego only |
+| Can change `/etc/letsencrypt` | Nginx's workers and lego | lego only; the server mounts it read-only |
+| Nginx's own filesystem | writable | read-only, with four small tmpfs |
+| Containers | 1 | 2, from the same image |
+
+**If you stay on one container**, nothing changes except one permission: with
+`NGINX_LEGO_CERT_GROUP` set, `dhparams/` becomes `0750` and `dhparam.pem` `0640`,
+owned by that group, like the certificates already are. DH parameters are public
+values; a split server has to read them. Without `NGINX_LEGO_CERT_GROUP`, nothing
+changes at all.
+
+**To switch** an existing single container:
+
+1. Keep the container and its `/etc/letsencrypt` volume: it becomes the issuer.
+   Add `NGINX_LEGO_ROLE=issuer`, `NGINX_LEGO_CERT_GROUP=10443` (any unused gid) and
+   `group_add: ["10443"]`, and remove its `ports`.
+2. Add the server: the same image with `NGINX_LEGO_ROLE=server`, `user: "102:0"`,
+   `group_add: ["10443"]`, the same volume mounted `:ro`, your `user_conf.d` mounted
+   `:ro`, `read_only: true` with `tmpfs` for `/run`, `/var/cache/nginx`,
+   `/etc/nginx/conf.d` and `/tmp`, and the `ports`.
+3. HTTP-01 certificates also need a volume at `/var/www/letsencrypt` in both
+   containers (read-only in the server). For DNS-01 keep the credential files
+   mounted in the issuer only; the server needs nothing.
+4. Start the issuer first, then the server. If something is set up so that the
+   server could reach the issuer's secrets (wrong uid, credentials readable, store
+   writable), it refuses to start and logs the fix.
+
+No `chown` is needed: the issuer keeps the user `101:101`. **To go back**, remove
+the server, drop `NGINX_LEGO_ROLE` from the issuer and give it its ports again.
+The whole setup is in [`examples/docker-compose-split.yml`](./examples/docker-compose-split.yml),
+and the details are in
+[Run Nginx and lego in Separate Containers](./docs/advanced_usage.md#run-nginx-and-lego-in-separate-containers).
 
 
 ## Available Environment Variables
@@ -121,6 +189,8 @@ in [Running as Non-Root](./docs/good_to_know.md#running-as-non-root).
 ### Advanced
 - `LEGO_EXTRA_CERTS`: Certificates to obtain and renew that no server block references, because something other than this Nginx serves them. Format `<cert_name>=<domain>[,<domain>...][;<cert_name>=...]`. See [Certificates Nginx Does Not Serve](./docs/advanced_usage.md#certificates-nginx-does-not-serve).
 - `NGINX_LEGO_CERT_GROUP`: A group name or gid given read access to the issued certificates and keys, so another container can use them. The container must be a member of that group (`--group-add`). See [Share Certificates With Another Container](./docs/advanced_usage.md#share-certificates-with-another-container).
+- `NGINX_LEGO_ROLE`: `all` (default) runs Nginx and lego in one container. `issuer` and `server` split them into two containers from the same image, so Nginx never holds the DNS credentials or the ACME account. See [Run Nginx and lego in Separate Containers](./docs/advanced_usage.md#run-nginx-and-lego-in-separate-containers).
+- `NGINX_LEGO_RELOAD_CHECK`: In the server of a split setup, seconds between looks for a renewal by the issuer (default: `60`)
 - `NGINX_INCLUDE_MAX_DEPTH`: How many levels of `include` directives to follow when reading a config file (default: `10`)
 - `NGINX_PREFIX`: Base directory used to resolve relative `include` paths (default: `/etc/nginx`, matching the image's nginx prefix)
 - `LEGO_DEFAULT_PROVIDER`: Default DNS provider for all certs without an explicit `.dns-<provider>` suffix (e.g. `cloudflare`). See [lego providers](./docs/lego_providers.md).

@@ -6,13 +6,20 @@ and [lego](https://github.com/go-acme/lego). No Python. No certbot. Just a stati
 Fork of [JonasAlfredsson/docker-nginx-certbot](https://github.com/JonasAlfredsson/docker-nginx-certbot)
 with certbot replaced by lego — endorsed by the upstream author.
 
-> **⚠️ Breaking change from `lego5.6.0-nginx1.31.8`: the image no longer runs as root.**
-> Every image now runs as the unprivileged user `101:101`. `latest`, `latest-alpine`
-> and `latest-ubuntu` move to it on release; `lego5.4.1-nginx1.31.8` and older still
-> run as root. **An existing setup needs a one-time migration**, most often:
-> `docker run --rm --user 0 -v <volume-or-dir>:/etc/letsencrypt emulator/docker-nginx-lego chown -R 101:101 /etc/letsencrypt`.
-> Read [Upgrading to the Non-Root Image](https://github.com/emulatorchen/docker-nginx-lego#upgrading-to-the-non-root-image)
-> before you pull.
+> **⚠️ Two changes to know before you pull:**
+>
+> 1. **From `lego5.6.0-nginx1.31.8` the image no longer runs as root.** Every image
+>    runs as the unprivileged user `101:101`; `lego5.4.1-nginx1.31.8` and older still
+>    run as root. **An existing setup needs a one-time migration**, most often:
+>    `docker run --rm --user 0 -v <volume-or-dir>:/etc/letsencrypt emulator/docker-nginx-lego chown -R 101:101 /etc/letsencrypt`.
+>    Read [Upgrading to the Non-Root Image](https://github.com/emulatorchen/docker-nginx-lego#upgrading-to-the-non-root-image).
+> 2. **From `lego5.6.0-nginx1.31.10`, Nginx and lego can also
+>    run in separate containers** (opt-in, `NGINX_LEGO_ROLE`), so Nginx never holds the
+>    DNS credentials. Without it nothing changes, except that `NGINX_LEGO_CERT_GROUP`
+>    now shares the Diffie-Hellman parameters too. Read
+>    [Splitting Nginx and lego](https://github.com/emulatorchen/docker-nginx-lego#splitting-nginx-and-lego).
+>
+> Which setup to run: [Choose Your Setup](https://github.com/emulatorchen/docker-nginx-lego#choose-your-setup).
 
 ## Quick start
 
@@ -74,6 +81,7 @@ ssl_certificate_key /etc/letsencrypt/live/example.com.dns-route53/privkey.pem;
 | `RENEWAL_INTERVAL` | `8d` | Time between renewal checks |
 | `USE_ECDSA` | `1` | ECDSA certs (set to `0` for RSA only) |
 | `NGINX_LEGO_CERT_GROUP` | — | Group (name or gid) given read access to the certificates, for another container ([how](https://github.com/emulatorchen/docker-nginx-lego/blob/master/docs/advanced_usage.md#share-certificates-with-another-container)) |
+| `NGINX_LEGO_ROLE` | `all` | `issuer` / `server`: Nginx and lego in separate containers, so Nginx never holds the DNS credentials ([how](https://github.com/emulatorchen/docker-nginx-lego/blob/master/docs/advanced_usage.md#run-nginx-and-lego-in-separate-containers)) |
 
 ## Volumes
 
