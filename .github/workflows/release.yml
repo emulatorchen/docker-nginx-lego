@@ -82,9 +82,11 @@ jobs:
           nginx=$(grep -m1 '^FROM nginx:' src/Dockerfile | sed 's/FROM nginx://; s/@sha256:[^ ]*//')
           base="lego${lego}-nginx${nginx}"
           tags=$(git ls-remote --tags origin)
-          if printf '%s\n' "$tags" | grep -q "refs/tags/${base}$"; then
+          # Here-strings, not pipes: under pipefail a grep -q that stops at the
+          # first match can fail the pipe while printf is still writing a long list.
+          if grep -q "refs/tags/${base}$" <<< "$tags"; then
             rev=1
-            while printf '%s\n' "$tags" | grep -q "refs/tags/${base}-r${rev}$"; do
+            while grep -q "refs/tags/${base}-r${rev}$" <<< "$tags"; do
               rev=$((rev + 1))
             done
             tag="${base}-r${rev}"

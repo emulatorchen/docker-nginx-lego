@@ -144,7 +144,9 @@ jobs:
             bash base/scripts/validate.sh > "${RUNNER_TEMP}/rules.txt" 2>&1
           rc=$?
           # A change to a Dockerfile: lego's pins as master's lego_pins.sh checks them.
-          if tr '\0' '\n' < "${RUNNER_TEMP}/changed.z" | grep -qE '^src/Dockerfile'; then
+          # Not piped into grep -q: under pipefail an early grep exit fails a pipe
+          # still writing a long list, and the lego check would be skipped.
+          if tr '\0' '\n' < "${RUNNER_TEMP}/changed.z" | grep -E '^src/Dockerfile' > /dev/null; then
             printf '\n== lego pins (master'\''s lego_pins.sh) ==\n' >> "${RUNNER_TEMP}/rules.txt"
             if ! (cd "${RUNNER_TEMP}/pr" && bash "${lego_pins}" --check \
                   src/Dockerfile src/Dockerfile-alpine src/Dockerfile-ubuntu) >> "${RUNNER_TEMP}/rules.txt" 2>&1; then
