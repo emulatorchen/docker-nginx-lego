@@ -54,6 +54,10 @@ RUN set -ex && \
 # ACME challenge requests are correctly forwarded to lego and then redirects
 # everything else to HTTPS.
 COPY nginx_conf.d/ /etc/nginx/conf.d/
+# FORK: not present upstream. A split setup's server (NGINX_LEGO_ROLE) may run
+# with /etc/nginx/conf.d on a tmpfs, which hides the file above; it restores it
+# from this copy at start (restore_image_conf in util.sh).
+COPY nginx_conf.d/ /usr/local/share/nginx-lego/conf.d/
 
 # Copy in all our scripts and make them executable.
 COPY scripts/ /scripts

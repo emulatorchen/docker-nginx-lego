@@ -276,15 +276,10 @@ done
 # Local CA certificates get NGINX_LEGO_CERT_GROUP read access just like lego's.
 share_certificates /etc/letsencrypt || true
 
-# After trying to sign all of the certificates, auto enable any configs that we
-# did indeed succeed with.
-auto_enable_configs
-
-# Make sure the Nginx configs are valid.
-if ! nginx -t; then
-  error "Nginx configuration is invalid, skipped reloading. Check the logs for details."
-  exit 0
-fi
-
-# Finally, tell Nginx to reload the configs.
-nginx -s reload
+# FORK: not present upstream. Do not drop when syncing this file; see
+# UPSTREAM_SYNC.md.
+#
+# After trying to sign all of the certificates: with Nginx in this container,
+# enable the configs we succeeded with and reload it (unless the config is
+# invalid); an issuer (NGINX_LEGO_ROLE) marks the store for its server instead.
+after_renewal /etc/letsencrypt

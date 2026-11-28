@@ -223,10 +223,13 @@ read access instead:
 | `certificates/`, `live/` and every `live/<cert_name>/` | `0750`, owned by the group |
 | `certificates/*.crt` and `certificates/*.key` | `0640`, owned by the group |
 | files the [local CA](#local-ca) writes into `live/<cert_name>/` | `0640`, owned by the group |
+| `dhparams/` and `dhparams/*.pem` | `0750` and `0640`, owned by the group |
 
+DH parameters are public values; they are shared so that a server in its own
+container ([below](#run-nginx-and-lego-in-separate-containers)) can use them.
 Nothing else changes. The ACME account key (`accounts/`), lego's metadata
-(`*.json`), DNS credential files (`*.ini`), `archive/` and `dhparams/` keep the
-permissions they have, and no symlink is ever followed. The group is applied
+(`*.json`), DNS credential files (`*.ini`) and `archive/` keep the permissions
+they have, and no symlink is ever followed. The group is applied
 after every issue and renewal, and once at startup for certificates that
 already exist. Unset, nothing changes at all.
 
@@ -270,6 +273,99 @@ Two details:
   everyone, such as a DNS credentials file created `0644`. Keep credential files
   `0600`, or outside the shared volume with
   [`CERTBOT_DNS_CREDENTIALS_DIR`](../README.md#advanced).
+
+
+## Run Nginx and lego in Separate Containers
+In one container, Nginx's workers run as the same user as lego, so code running
+in a worker can read the DNS credentials and the ACME account key
+([why](./good_to_know.md#what-it-means-for-security)). Splitting the image into
+two containers, both from the same image, takes them out of Nginx's reach. It is
+opt-in: without `NGINX_LEGO_ROLE` the image works as one container, as always.
+
+| | Issuer (`NGINX_LEGO_ROLE=issuer`) | Server (`NGINX_LEGO_ROLE=server`) |
+|---|---|---|
+| Runs | lego and the renewal loop; no Nginx, no ports | Nginx only |
+| User | the image user `101:101` | another uid, for example `102:0` |
+| Certificate store | read-write, its owner | read-only (`:ro`) |
+| DNS credentials | mounted here only | none |
+| Can read | everything in the store | certificates, keys and DH parameters, through the certificate group |
+
+The issuer refuses to start without `NGINX_LEGO_CERT_GROUP`, since the server
+could not read a key otherwise. The server refuses to start, and later to
+reload, if it runs as root or as the issuer's uid (the owner of the store), if
+it can read the ACME account or a DNS credentials file, or if it can write the
+store (the store is not mounted `:ro`), and says how to fix it.
+
+After every renewal pass the issuer writes a mark into the store. The server
+looks at it every `NGINX_LEGO_RELOAD_CHECK` seconds (default `60`) and reloads
+Nginx once per renewal, unless `nginx -t` fails.
+
+The whole setup is in
+[`examples/docker-compose-split.yml`](../examples/docker-compose-split.yml):
+
+```yaml
+services:
+  issuer:
+    image: emulator/docker-nginx-lego:latest
+    group_add: ["10443"]
+    environment:
+      - CERTBOT_EMAIL=your@email.org
+      - NGINX_LEGO_ROLE=issuer
+      - NGINX_LEGO_CERT_GROUP=10443
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - acme_challenges:/var/www/letsencrypt
+      - ./user_conf.d:/etc/nginx/user_conf.d:ro
+      - ./dns_credentials:/etc/letsencrypt/credentials:ro
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  server:
+    image: emulator/docker-nginx-lego:latest
+    user: "102:0"
+    group_add: ["10443"]
+    environment:
+      - NGINX_LEGO_ROLE=server
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - letsencrypt:/etc/letsencrypt:ro
+      - acme_challenges:/var/www/letsencrypt:ro
+      - ./user_conf.d:/etc/nginx/user_conf.d:ro
+    read_only: true
+    tmpfs: [/run, /var/cache/nginx, /etc/nginx/conf.d, /tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on: [issuer]
+
+volumes:
+  letsencrypt:
+  acme_challenges:
+```
+
+What to know:
+
+- **DNS-01** works in the issuer exactly as in one container: the certificate
+  name suffix, `LEGO_DEFAULT_PROVIDER` and the `.ini` files in
+  `CERTBOT_DNS_CREDENTIALS_DIR`. Mount the credentials into the issuer only, as
+  above with `CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials`.
+- **HTTP-01** needs the webroot shared: lego writes the challenges into
+  `/var/www/letsencrypt` in the issuer, and the server answers them from the same
+  volume. A DNS-01-only setup does not need that volume.
+- **The server's read-only filesystem**: `/run`, `/var/cache/nginx`,
+  `/etc/nginx/conf.d` and `/tmp` must be writable, here as tmpfs. The image's own
+  file in `/etc/nginx/conf.d` (the port 80 redirect and the challenge path) is
+  put back there at every start.
+- **Signals**: `SIGHUP` to the issuer runs a renewal pass now; the server reloads
+  once it sees the new mark. Send `SIGUSR1` (reopen logs) to the server.
+- **Moving from one container**: keep your current container and volume as the
+  issuer (add `NGINX_LEGO_ROLE=issuer` and `NGINX_LEGO_CERT_GROUP`, drop its
+  ports), add the server, and add the webroot volume to both if you use HTTP-01.
+  The store needs no `chown`: the issuer keeps the image user.
+- **Kubernetes**: the same two containers in one pod, the server with
+  `runAsUser: 102`, `readOnlyRootFilesystem: true` and `emptyDir` volumes for the
+  four writable paths, both with `supplementalGroups: [10443]`.
 
 
 ## Use Custom ACME URL

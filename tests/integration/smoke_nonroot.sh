@@ -118,9 +118,11 @@ ok "serves HTTPS on port 443"
 ok "redirects HTTP on port 80"
 
 if [ "${dhparam}" = 1 ]; then
-    [ "$(docker exec "${id}" stat -c '%u %a' /etc/letsencrypt/dhparams/dhparam.pem)" = "101 600" ] \
-        || fail "dhparam.pem is not 0600 and owned by uid 101"
-    ok "writes dhparams as uid 101"
+    # Shared with NGINX_LEGO_CERT_GROUP like the certificates: DH parameters are
+    # public, and a separate server has to read them.
+    [ "$(docker exec "${id}" stat -c '%u %a %g' /etc/letsencrypt/dhparams/dhparam.pem)" = "101 640 ${group}" ] \
+        || fail "dhparam.pem is not 0640, owned by uid 101 and group ${group}"
+    ok "writes dhparams as uid 101, shared with group ${group}"
 fi
 
 for path in /etc/letsencrypt/live /etc/letsencrypt/live/smoke-cert; do

@@ -344,13 +344,8 @@ for cert_name in "${!certificates[@]}"; do
     fi
 done
 
-# Always enable configs regardless of whether lego renewed anything.
-# This ensures configs with pre-existing certs on disk are properly enabled.
-auto_enable_configs
-
-if ! nginx -t; then
-    error "Nginx configuration is invalid. Check the logs for details."
-    exit 0
-fi
-
-nginx -s reload
+# Always enable configs and reload, whether or not lego renewed anything, so
+# configs with certificates already on disk get enabled. after_renewal (util.sh)
+# does that with Nginx in this container; an issuer (NGINX_LEGO_ROLE) marks the
+# store for its server instead.
+after_renewal "${LEGO_PATH}"

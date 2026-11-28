@@ -113,66 +113,31 @@ jobs:
           }
           EOF
 
-      - name: Run container and request staging cert
+      # One staging certificate per run: the split's issuer orders it by DNS-01,
+      # the split's server serves it, and a single container on the same store
+      # must keep it instead of ordering another.
+      - name: Issue by DNS-01 in the split, serve it, reuse it in a single container
         if: steps.check.outputs.skip != 'true'
-        id: run_container
         env:
           CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
           FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
+          FREEMYIP_DOMAIN: ${{ vars.FREEMYIP_DOMAIN }}
         run: |
-          docker run -d \
-            --name nginx-lego-test \
-            --group-add 10443 \
-            -e CERTBOT_EMAIL="${CERTBOT_EMAIL}" \
-            -e STAGING=1 \
-            -e RENEWAL_INTERVAL=9999d \
-            -e NGINX_LEGO_CERT_GROUP=10443 \
-            -e CERTBOT_DNS_CREDENTIALS_DIR=/etc/letsencrypt/credentials \
-            -v /tmp/lego-test-creds:/etc/letsencrypt/credentials:ro \
-            -v /tmp/lego-test-conf:/etc/nginx/user_conf.d:ro \
-            -v lego-test-certs:/etc/letsencrypt \
-            -p 8080:80 \
-            -p 8443:443 \
-            docker-nginx-lego:integration-test
-          # Wait up to 90s for cert to appear
-          for i in $(seq 1 18); do
-            sleep 5
-            if docker exec nginx-lego-test test -f /etc/letsencrypt/live/"${FREEMYIP_CERT_NAME}"/fullchain.pem 2>/dev/null; then
-              echo "cert_obtained=true" >> $GITHUB_OUTPUT
-              break
-            fi
-            echo "Waiting for cert... attempt $i/18"
-          done
-
-      - name: Verify certificate file exists
-        if: steps.check.outputs.skip != 'true'
-        env:
-          CERT_OBTAINED: ${{ steps.run_container.outputs.cert_obtained }}
-        run: |
-          if [ "${CERT_OBTAINED}" != "true" ]; then
-            echo "Certificate was not obtained within timeout"
-            docker logs nginx-lego-test
-            exit 1
-          fi
-          echo "Certificate obtained successfully"
-
-      - name: Verify the certificate is shared with NGINX_LEGO_CERT_GROUP
-        if: steps.check.outputs.skip != 'true'
-        env:
-          FREEMYIP_CERT_NAME: ${{ vars.FREEMYIP_CERT_NAME }}
-        run: |
-          tests/integration/check_cert_group.sh nginx-lego-test "${FREEMYIP_CERT_NAME}" 10443 \
-            docker-nginx-lego:integration-test lego-test-certs
+          tests/integration/dns01_split.sh docker-nginx-lego:integration-test \
+            "${FREEMYIP_CERT_NAME}" "${FREEMYIP_DOMAIN}" /tmp/lego-test-creds /tmp/lego-test-conf
 
       - name: Print container logs
         if: steps.check.outputs.skip != 'true' && always()
-        run: docker logs nginx-lego-test || true
+        run: |
+          for c in nginx-lego-issuer nginx-lego-server nginx-lego-test; do
+            echo "== ${c}"
+            docker logs "${c}" || true
+          done
 
-      - name: Stop and remove container
+      - name: Stop and remove containers
         if: steps.check.outputs.skip != 'true' && always()
         run: |
-          docker stop nginx-lego-test || true
-          docker rm nginx-lego-test || true
+          docker rm -f nginx-lego-issuer nginx-lego-server nginx-lego-test || true
           docker volume rm lego-test-certs || true
 
   nonroot_smoke:
@@ -213,6 +178,12 @@ jobs:
         env:
           VARIANT: ${{ matrix.variant }}
         run: tests/integration/smoke_nonroot.sh "docker-nginx-lego:smoke-${VARIANT}"
+
+      # The opt-in split (NGINX_LEGO_ROLE): issuer and server in two containers.
+      - name: Run the split smoke test
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: tests/integration/smoke_split.sh "docker-nginx-lego:smoke-${VARIANT}"
 
   integration_status:
     name: "Integration test status"

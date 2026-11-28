@@ -40,6 +40,28 @@ Another container that reads the certificates this image issues, such as a TLS
 terminator in front of it.
 _Avoid_: client, reader
 
+### Split setup
+
+**Role**:
+Which part of the work a container of this image does, set with
+`NGINX_LEGO_ROLE`: `all` (everything, the default), issuer or server.
+_Avoid_: mode, profile
+
+**Issuer**:
+The container of a split setup that runs lego and owns the certificate store,
+with no Nginx.
+_Avoid_: lego container, renewer
+
+**Server**:
+The container of a split setup that runs Nginx only, as its own uid, from the
+issuer's store mounted read-only.
+_Avoid_: nginx container, frontend
+
+**Renewal mark**:
+The file the issuer rewrites after every renewal pass, which tells the server to
+reload.
+_Avoid_: stamp, flag file
+
 ### Releases
 
 **Version tag**:

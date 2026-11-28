@@ -25,11 +25,21 @@ point to the latest nginx for that lego version, and move as updates are release
 
 ## Current Tags
 
-| Lego    | Nginx  | Tag                              |
-| :------ | :----- | :------------------------------- |
-| 5.0.4   | 1.31.1 | `lego5.0.4-nginx1.31.1`          |
-|         |        | `lego5.0.4-nginx1.31.1-alpine`   |
-|         |        | `lego5.0.4-nginx1.31.1-ubuntu`   |
+| Lego    | Nginx   | Tag                              |
+| :------ | :------ | :------------------------------- |
+| 5.6.0   | 1.31.10 | `lego5.6.0-nginx1.31.10`         |
+|         |         | `lego5.6.0-nginx1.31.10-alpine`  |
+|         |         | `lego5.6.0-nginx1.31.10-ubuntu`  |
+
+## What Changed Between Tags
+
+| Tags | Runs as | Split setup (`NGINX_LEGO_ROLE`) |
+| :--- | :------ | :------------------------------ |
+| `lego5.4.1-nginx1.31.8` and older | root | no |
+| `lego5.6.0-nginx1.31.8` to `lego5.6.0-nginx1.31.9-r1` | `101:101` | no |
+| `lego5.6.0-nginx1.31.10` and newer | `101:101` | yes, opt-in |
+
+See [Choose Your Setup](../README.md#choose-your-setup) for what each means.
 
 ## Architecture Support
 
